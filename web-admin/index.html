@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LiveSignal Kiosk - Slide Editor</title>
+<style>
+  :root {
+    --bg: #0b1020;
+    --panel: #161d34;
+    --panel-border: #2a3358;
+    --fg: #f5f7ff;
+    --muted: #a9b4d0;
+    --accent: #6ea8fe;
+    --danger: #ff6e6e;
+    --ok: #6efeb0;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    padding: 24px;
+  }
+
+  h1 {
+    font-size: 1.6rem;
+    margin: 0 0 4px 0;
+  }
+
+  .subtitle {
+    color: var(--muted);
+    margin: 0 0 24px 0;
+  }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 20px;
+  }
+
+  .panel h2 {
+    font-size: 1.05rem;
+    margin: 0 0 12px 0;
+  }
+
+  .logo-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .logo-row img {
+    max-height: 60px;
+    max-width: 160px;
+    background: #fff;
+    border-radius: 6px;
+    padding: 4px;
+  }
+
+  .slide-card {
+    background: #10162c;
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 12px;
+  }
+
+  .slide-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+
+  .slide-card-header strong {
+    font-size: 1rem;
+  }
+
+  .slide-order-controls button {
+    padding: 2px 8px;
+  }
+
+  .field-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .field.full {
+    grid-column: 1 / -1;
+  }
+
+  label {
+    font-size: 0.8rem;
+    color: var(--muted);
+  }
+
+  input[type="text"],
+  input[type="number"],
+  input[type="password"],
+  textarea {
+    background: #0c1226;
+    border: 1px solid var(--panel-border);
+    color: var(--fg);
+    border-radius: 6px;
+    padding: 8px;
+    font-family: inherit;
+    font-size: 0.9rem;
+  }
+
+  textarea {
+    resize: vertical;
+    min-height: 50px;
+  }
+
+  .invalid {
+    border-color: var(--danger) !important;
+  }
+
+  .field-error {
+    color: var(--danger);
+    font-size: 0.75rem;
+    min-height: 1em;
+  }
+
+  button {
+    background: var(--accent);
+    color: #08101f;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 14px;
+    font-weight: 600;
+    cursor: pointer;
+    font-size: 0.85rem;
+  }
+
+  button.secondary {
+    background: #2a3358;
+    color: var(--fg);
+  }
+
+  button.danger {
+    background: var(--danger);
+    color: #2a0808;
+  }
+
+  button:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+
+  .row-actions {
+    display: flex;
+    gap: 6px;
+  }
+
+  .image-preview {
+    max-height: 80px;
+    max-width: 160px;
+    display: block;
+    margin-top: 6px;
+    border-radius: 4px;
+    background: #fff;
+  }
+
+  #status-bar {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    padding: 10px 14px;
+    border-radius: 8px;
+    margin-bottom: 16px;
+    display: none;
+    font-size: 0.9rem;
+  }
+
+  #status-bar.ok {
+    display: block;
+    background: rgba(110, 254, 176, 0.15);
+    border: 1px solid var(--ok);
+    color: var(--ok);
+  }
+
+  #status-bar.error {
+    display: block;
+    background: rgba(255, 110, 110, 0.15);
+    border: 1px solid var(--danger);
+    color: var(--danger);
+  }
+
+  .toolbar {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+  }
+
+  .hint {
+    color: var(--muted);
+    font-size: 0.8rem;
+  }
+</style>
+</head>
+<body>
+  <h1>LiveSignal Kiosk - Slide Editor</h1>
+  <p class="subtitle">
+    Edit announcement slides shown on the waiting screen. Changes save
+    directly to <code>web/slides.json</code>.
+  </p>
+
+  <div id="status-bar"></div>
+
+  <div class="panel">
+    <h2>Church Logo</h2>
+    <div class="logo-row">
+      <img id="logo-preview" src="/assets/src-logo.png" alt="Current logo">
+      <div>
+        <input type="file" id="logo-file" accept="image/*">
+        <button id="logo-upload-btn" class="secondary">Replace Logo</button>
+        <p class="hint">Uploads and overwrites the logo shown on every waiting-screen slide.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Default slide duration (seconds)</h2>
+    <input type="number" id="default-duration" min="1" step="1" style="width: 120px;">
+  </div>
+
+  <div class="toolbar">
+    <button id="add-slide-btn">+ Add Slide</button>
+    <button id="save-btn" class="secondary">Save All Changes</button>
+  </div>
+
+  <div id="slides-container"></div>
+
+  <script>
+    (function () {
+      var statusBar = document.getElementById("status-bar");
+      var slidesContainer = document.getElementById("slides-container");
+      var defaultDurationInput = document.getElementById("default-duration");
+      var logoPreview = document.getElementById("logo-preview");
+
+      var state = { default_duration_seconds: 10, slides: [] };
+
+      function showStatus(message, isError) {
+        statusBar.textContent = message;
+        statusBar.className = isError ? "error" : "ok";
+        window.clearTimeout(showStatus._t);
+        showStatus._t = window.setTimeout(function () {
+          statusBar.className = "";
+        }, 6000);
+      }
+
+      function apiFetch(url, options) {
+        options = options || {};
+        return fetch(url, options).then(function (res) {
+          if (res.status === 401) {
+            throw new Error("Login required - reload the page and enter credentials.");
+          }
+          return res.json().then(function (body) {
+            if (!res.ok) {
+              throw new Error((body && body.error) || ("HTTP " + res.status));
+            }
+            return body;
+          });
+        });
+      }
+
+      function loadSlides() {
+        apiFetch("/api/slides")
+          .then(function (data) {
+            state.default_duration_seconds = data.default_duration_seconds || 10;
+            state.slides = Array.isArray(data.slides) ? data.slides : [];
+            render();
+          })
+          .catch(function (err) {
+            showStatus("Failed to load slides: " + err.message, true);
+          });
+      }
+
+      function fieldRow(labelText, inputEl, errorEl) {
+        var wrap = document.createElement("div");
+        wrap.className = "field";
+        var label = document.createElement("label");
+        label.textContent = labelText;
+        wrap.appendChild(label);
+        wrap.appendChild(inputEl);
+        if (errorEl) {
+          wrap.appendChild(errorEl);
+        }
+        return wrap;
+      }
+
+      function validateSlide(slide, titleInput, durationInput, titleErr, durationErr) {
+        var ok = true;
+        if (!slide.title || !slide.title.trim()) {
+          titleInput.classList.add("invalid");
+          titleErr.textContent = "Title is required";
+          ok = false;
+        } else {
+          titleInput.classList.remove("invalid");
+          titleErr.textContent = "";
+        }
+
+        if (slide.duration !== undefined && slide.duration !== null && slide.duration !== "") {
+          var num = Number(slide.duration);
+          if (isNaN(num) || num <= 0) {
+            durationInput.classList.add("invalid");
+            durationErr.textContent = "Duration must be a positive number";
+            ok = false;
+          } else {
+            durationInput.classList.remove("invalid");
+            durationErr.textContent = "";
+          }
+        } else {
+          durationInput.classList.remove("invalid");
+          durationErr.textContent = "";
+        }
+
+        return ok;
+      }
+
+      function buildSlideCard(slide, index) {
+        var card = document.createElement("div");
+        card.className = "slide-card";
+
+        var header = document.createElement("div");
+        header.className = "slide-card-header";
+
+        var heading = document.createElement("strong");
+        heading.textContent = "Slide " + (index + 1);
+        header.appendChild(heading);
+
+        var orderControls = document.createElement("div");
+        orderControls.className = "slide-order-controls row-actions";
+
+        var upBtn = document.createElement("button");
+        upBtn.className = "secondary";
+        upBtn.textContent = "^ Up";
+        upBtn.disabled = index === 0;
+        upBtn.onclick = function () {
+          moveSlide(index, index - 1);
+        };
+
+        var downBtn = document.createElement("button");
+        downBtn.className = "secondary";
+        downBtn.textContent = "v Down";
+        downBtn.disabled = index === state.slides.length - 1;
+        downBtn.onclick = function () {
+          moveSlide(index, index + 1);
+        };
+
+        var deleteBtn = document.createElement("button");
+        deleteBtn.className = "danger";
+        deleteBtn.textContent = "Delete";
+        deleteBtn.onclick = function () {
+          if (window.confirm("Delete this slide?")) {
+            state.slides.splice(index, 1);
+            render();
+          }
+        };
+
+        orderControls.appendChild(upBtn);
+        orderControls.appendChild(downBtn);
+        orderControls.appendChild(deleteBtn);
+        header.appendChild(orderControls);
+        card.appendChild(header);
+
+        var row1 = document.createElement("div");
+        row1.className = "field-row";
+
+        var titleInput = document.createElement("input");
+        titleInput.type = "text";
+        titleInput.value = slide.title || "";
+        var titleErr = document.createElement("div");
+        titleErr.className = "field-error";
+
+        var subtitleInput = document.createElement("input");
+        subtitleInput.type = "text";
+        subtitleInput.value = slide.subtitle || "";
+
+        row1.appendChild(fieldRow("Title", titleInput, titleErr));
+        row1.appendChild(fieldRow("Subtitle", subtitleInput, null));
+        card.appendChild(row1);
+
+        var row2 = document.createElement("div");
+        row2.className = "field-row";
+
+        var messageInput = document.createElement("textarea");
+        messageInput.value = slide.message || "";
+        var messageField = fieldRow("Message (line breaks allowed)", messageInput, null);
+        messageField.className = "field full";
+        row2.appendChild(messageField);
+        card.appendChild(row2);
+
+        var row3 = document.createElement("div");
+        row3.className = "field-row";
+
+        var durationInput = document.createElement("input");
+        durationInput.type = "number";
+        durationInput.min = "1";
+        durationInput.step = "1";
+        durationInput.value = slide.duration !== undefined && slide.duration !== null ? slide.duration : "";
+        durationInput.placeholder = "default";
+        var durationErr = document.createElement("div");
+        durationErr.className = "field-error";
+        row3.appendChild(fieldRow("Duration (seconds, optional)", durationInput, durationErr));
+
+        var imageWrap = document.createElement("div");
+        imageWrap.className = "field";
+        var imageLabel = document.createElement("label");
+        imageLabel.textContent = "Image";
+        imageWrap.appendChild(imageLabel);
+
+        var imageFileInput = document.createElement("input");
+        imageFileInput.type = "file";
+        imageFileInput.accept = "image/*";
+        imageWrap.appendChild(imageFileInput);
+
+        var imagePreview = document.createElement("img");
+        imagePreview.className = "image-preview";
+        if (slide.image) {
+          imagePreview.src = "/assets/" + slide.image;
+        } else {
+          imagePreview.style.display = "none";
+        }
+        imageWrap.appendChild(imagePreview);
+
+        imageFileInput.onchange = function () {
+          var file = imageFileInput.files[0];
+          if (!file) {
+            return;
+          }
+          uploadImage(file).then(function (filename) {
+            slide.image = filename;
+            imagePreview.src = "/assets/" + filename + "?t=" + Date.now();
+            imagePreview.style.display = "";
+            showStatus("Image uploaded for slide " + (index + 1) + ".", false);
+          }).catch(function (err) {
+            showStatus("Image upload failed: " + err.message, true);
+          });
+        };
+
+        row3.appendChild(imageWrap);
+        card.appendChild(row3);
+
+        function syncFromInputs() {
+          slide.title = titleInput.value;
+          slide.subtitle = subtitleInput.value;
+          slide.message = messageInput.value;
+          slide.duration = durationInput.value === "" ? undefined : Number(durationInput.value);
+          validateSlide(slide, titleInput, durationInput, titleErr, durationErr);
+        }
+
+        titleInput.oninput = syncFromInputs;
+        subtitleInput.oninput = syncFromInputs;
+        messageInput.oninput = syncFromInputs;
+        durationInput.oninput = syncFromInputs;
+
+        return card;
+      }
+
+      function moveSlide(from, to) {
+        var item = state.slides.splice(from, 1)[0];
+        state.slides.splice(to, 0, item);
+        render();
+      }
+
+      function render() {
+        defaultDurationInput.value = state.default_duration_seconds;
+        slidesContainer.innerHTML = "";
+        state.slides.forEach(function (slide, index) {
+          slidesContainer.appendChild(buildSlideCard(slide, index));
+        });
+      }
+
+      function uploadImage(file) {
+        var form = new FormData();
+        form.append("file", file, file.name);
+        return fetch("/api/upload", { method: "POST", body: form }).then(function (res) {
+          if (res.status === 401) {
+            throw new Error("Login required - reload the page.");
+          }
+          return res.json().then(function (body) {
+            if (!res.ok) {
+              throw new Error((body && body.error) || ("HTTP " + res.status));
+            }
+            return body.filename;
+          });
+        });
+      }
+
+      function uploadLogo(file) {
+        var form = new FormData();
+        form.append("file", file, file.name);
+        return fetch("/api/logo", { method: "POST", body: form }).then(function (res) {
+          if (res.status === 401) {
+            throw new Error("Login required - reload the page.");
+          }
+          return res.json().then(function (body) {
+            if (!res.ok) {
+              throw new Error((body && body.error) || ("HTTP " + res.status));
+            }
+            return body;
+          });
+        });
+      }
+
+      function validateAll() {
+        var ok = true;
+        state.slides.forEach(function (slide) {
+          if (!slide.title || !String(slide.title).trim()) {
+            ok = false;
+          }
+          if (slide.duration !== undefined && slide.duration !== null && slide.duration !== "") {
+            var num = Number(slide.duration);
+            if (isNaN(num) || num <= 0) {
+              ok = false;
+            }
+          }
+        });
+        return ok;
+      }
+
+      function saveAll() {
+        if (!validateAll()) {
+          showStatus("Fix the highlighted fields before saving.", true);
+          render();
+          return;
+        }
+
+        var payload = {
+          default_duration_seconds: Number(defaultDurationInput.value) || 10,
+          slides: state.slides.map(function (slide) {
+            var out = { title: slide.title };
+            if (slide.subtitle) { out.subtitle = slide.subtitle; }
+            if (slide.message) { out.message = slide.message; }
+            if (slide.image) { out.image = slide.image; }
+            if (slide.duration !== undefined && slide.duration !== null && slide.duration !== "") {
+              out.duration = Number(slide.duration);
+            }
+            return out;
+          }),
+        };
+
+        apiFetch("/api/slides", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        })
+          .then(function () {
+            showStatus("Saved.", false);
+            loadSlides();
+          })
+          .catch(function (err) {
+            showStatus("Save failed: " + err.message, true);
+          });
+      }
+
+      document.getElementById("add-slide-btn").onclick = function () {
+        state.slides.push({ title: "New Slide", subtitle: "", message: "", duration: undefined });
+        render();
+      };
+
+      document.getElementById("save-btn").onclick = saveAll;
+
+      document.getElementById("logo-upload-btn").onclick = function () {
+        var input = document.getElementById("logo-file");
+        var file = input.files[0];
+        if (!file) {
+          showStatus("Choose a logo image file first.", true);
+          return;
+        }
+        uploadLogo(file)
+          .then(function () {
+            logoPreview.src = "/assets/src-logo.png?t=" + Date.now();
+            showStatus("Logo updated.", false);
+          })
+          .catch(function (err) {
+            showStatus("Logo upload failed: " + err.message, true);
+          });
+      };
+
+      loadSlides();
+    })();
+  </script>
+</body>
+</html>

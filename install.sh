@@ -88,7 +88,7 @@ else
   echo "install.sh: installed default config to ${CONFIG_FILE}"
 fi
 
-# --- 5. systemd unit ----------------------------------------------------------
+# --- 5. systemd units -----------------------------------------------------
 
 SERVICE_SRC="${APP_DIR}/scripts/kiosk.service"
 SERVICE_DEST="/etc/systemd/system/kiosk.service"
@@ -100,11 +100,25 @@ sed \
 
 echo "install.sh: installed ${SERVICE_DEST}"
 
+# kiosk-editor.service is installed but deliberately NOT enabled/started -
+# it's an optional, LAN-facing tool only needed while actively editing
+# slides, so it shouldn't be an always-on open port by default.
+EDITOR_SERVICE_SRC="${APP_DIR}/scripts/kiosk-editor.service"
+EDITOR_SERVICE_DEST="/etc/systemd/system/kiosk-editor.service"
+
+sed \
+  -e "s#__APP_DIR__#${APP_DIR}#g" \
+  -e "s#__KIOSK_USER__#${KIOSK_USER}#g" \
+  "${EDITOR_SERVICE_SRC}" > "${EDITOR_SERVICE_DEST}"
+
+echo "install.sh: installed ${EDITOR_SERVICE_DEST} (not enabled - see summary below)"
+
 chmod +x \
   "${APP_DIR}/scripts/start-kiosk.sh" \
   "${APP_DIR}/scripts/xsession.sh" \
   "${APP_DIR}/scripts/setup-lite-kiosk.sh" \
   "${APP_DIR}/scripts/silent-boot.sh" \
+  "${APP_DIR}/src/editor.py" \
   "${APP_DIR}/install.sh" \
   "${APP_DIR}/update.sh"
 
@@ -154,4 +168,13 @@ Next steps:
 
 Optional: run ${APP_DIR}/scripts/silent-boot.sh separately if you want to
 hide most of the Linux boot text before the kiosk appears.
+
+Optional: a browser-based slide editor is installed but OFF by default
+(it's a LAN-facing tool with its own login, only needed while actively
+editing - no reason to leave it running otherwise). Turn it on with:
+    sudo systemctl enable --now kiosk-editor
+...then browse to http://<this-device-ip>:8766 (default credentials are in
+${CONFIG_FILE} as EDITOR_USERNAME/EDITOR_PASSWORD - change EDITOR_PASSWORD
+from the default before exposing it on your network). Turn it back off with:
+    sudo systemctl disable --now kiosk-editor
 EOF

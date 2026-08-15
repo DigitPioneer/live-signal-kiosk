@@ -1,0 +1,18 @@
+[Unit]
+Description=LiveSignal Kiosk Slide Editor (optional, LAN-facing, off by default)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__KIOSK_USER__
+Group=__KIOSK_USER__
+WorkingDirectory=__APP_DIR__
+ExecStart=/usr/bin/python3 __APP_DIR__/src/editor.py
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
