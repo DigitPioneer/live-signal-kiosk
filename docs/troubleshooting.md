@@ -39,6 +39,18 @@ sudo journalctl -u kiosk -e
 Common causes:
 
 - **`kiosk.service` isn't enabled/started.** `sudo systemctl enable --now kiosk`.
+- **`kiosk.service`'s `[Install] WantedBy=` target doesn't match what this
+  device actually boots to.** Raspberry Pi OS Lite (and a generic
+  Debian/Ubuntu server install) boots to `multi-user.target` - there's no
+  display manager, so a unit `WantedBy=graphical.target` would be enabled
+  but never actually pulled in on a cold boot (`kiosk.service` correctly
+  ships with `WantedBy=multi-user.target` for exactly this reason - if
+  you've hand-edited the unit, check it hasn't drifted back). Confirm what
+  your device boots to and that the unit targets it:
+  ```bash
+  systemctl get-default
+  systemctl show kiosk.service -p WantedBy
+  ```
 - **X can't start on `tty1`** because a getty is still attached to it.
   `kiosk.service` declares `Conflicts=getty@tty1.service`, which should
   handle this automatically — but if you've customized `tty1` elsewhere,
@@ -46,6 +58,15 @@ Common causes:
 - **Watcher crashed at startup** (bad config, missing binary). Check
   `/var/log/live-signal-kiosk/watcher.log` and the `journalctl` output above
   for a Python traceback.
+
+> **Testing note:** `sudo systemctl start kiosk` succeeding only proves the
+> service *can* run - it does not prove the service starts on its own.
+> `systemctl start` bypasses the `[Install]`/`WantedBy=` wiring entirely, so
+> a unit with a target mismatch (like the `graphical.target` bug above) can
+> look completely fixed in manual testing while still never firing on a
+> real cold boot. Always confirm boot-time behavior with an actual
+> `sudo reboot` (or power-cycle) and watch it come up on its own - not just
+> `systemctl start`/`enable` followed by a status check.
 
 ## Chromium won't launch
 

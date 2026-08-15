@@ -24,4 +24,10 @@ RuntimeDirectory=live-signal-kiosk
 RuntimeDirectoryMode=0750
 
 [Install]
-WantedBy=graphical.target
+# Raspberry Pi OS Lite (and generic Debian/Ubuntu server installs) boot to
+# multi-user.target - there's no display manager, so graphical.target is
+# never reached and a unit WantedBy=graphical.target would never actually
+# start on a cold boot (it would only ever run if started manually, e.g.
+# `systemctl start kiosk`, which can make the bug look fixed when it isn't -
+# see docs/troubleshooting.md's cold-boot testing note).
+WantedBy=multi-user.target
