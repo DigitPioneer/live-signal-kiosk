@@ -114,6 +114,7 @@
   input[type="text"],
   input[type="number"],
   input[type="password"],
+  select,
   textarea {
     background: #0c1226;
     border: 1px solid var(--panel-border);
@@ -308,7 +309,7 @@
         return wrap;
       }
 
-      function validateSlide(slide, titleInput, durationInput, titleErr, durationErr) {
+      function validateSlide(slide, titleInput, durationInput, titleErr, durationErr, imageErr) {
         var ok = true;
         if (!slide.title || !slide.title.trim()) {
           titleInput.classList.add("invalid");
@@ -332,6 +333,15 @@
         } else {
           durationInput.classList.remove("invalid");
           durationErr.textContent = "";
+        }
+
+        if (imageErr) {
+          if (slide.full_image && !slide.image) {
+            imageErr.textContent = "An image is required for a full-screen image slide";
+            ok = false;
+          } else {
+            imageErr.textContent = "";
+          }
         }
 
         return ok;
@@ -382,6 +392,25 @@
         orderControls.appendChild(deleteBtn);
         header.appendChild(orderControls);
         card.appendChild(header);
+
+        var typeRow = document.createElement("div");
+        typeRow.className = "field-row";
+
+        var typeSelect = document.createElement("select");
+        var textOption = document.createElement("option");
+        textOption.value = "text";
+        textOption.textContent = "Text slide";
+        var fullImageOption = document.createElement("option");
+        fullImageOption.value = "full_image";
+        fullImageOption.textContent = "Full-screen image slide";
+        typeSelect.appendChild(textOption);
+        typeSelect.appendChild(fullImageOption);
+        typeSelect.value = slide.full_image ? "full_image" : "text";
+
+        var typeField = fieldRow("Slide type", typeSelect, null);
+        typeField.className = "field full";
+        typeRow.appendChild(typeField);
+        card.appendChild(typeRow);
 
         var row1 = document.createElement("div");
         row1.className = "field-row";
@@ -443,6 +472,10 @@
         }
         imageWrap.appendChild(imagePreview);
 
+        var imageErr = document.createElement("div");
+        imageErr.className = "field-error";
+        imageWrap.appendChild(imageErr);
+
         imageFileInput.onchange = function () {
           var file = imageFileInput.files[0];
           if (!file) {
@@ -452,6 +485,7 @@
             slide.image = filename;
             imagePreview.src = "/assets/" + filename + "?t=" + Date.now();
             imagePreview.style.display = "";
+            validateSlide(slide, titleInput, durationInput, titleErr, durationErr, imageErr);
             showStatus("Image uploaded for slide " + (index + 1) + ".", false);
           }).catch(function (err) {
             showStatus("Image upload failed: " + err.message, true);
@@ -461,18 +495,32 @@
         row3.appendChild(imageWrap);
         card.appendChild(row3);
 
+        function updateFieldVisibility() {
+          row1.style.display = slide.full_image ? "none" : "";
+          row2.style.display = slide.full_image ? "none" : "";
+        }
+
+        typeSelect.onchange = function () {
+          slide.full_image = typeSelect.value === "full_image";
+          updateFieldVisibility();
+          validateSlide(slide, titleInput, durationInput, titleErr, durationErr, imageErr);
+        };
+
         function syncFromInputs() {
           slide.title = titleInput.value;
           slide.subtitle = subtitleInput.value;
           slide.message = messageInput.value;
           slide.duration = durationInput.value === "" ? undefined : Number(durationInput.value);
-          validateSlide(slide, titleInput, durationInput, titleErr, durationErr);
+          validateSlide(slide, titleInput, durationInput, titleErr, durationErr, imageErr);
         }
 
         titleInput.oninput = syncFromInputs;
         subtitleInput.oninput = syncFromInputs;
         messageInput.oninput = syncFromInputs;
         durationInput.oninput = syncFromInputs;
+
+        updateFieldVisibility();
+        validateSlide(slide, titleInput, durationInput, titleErr, durationErr, imageErr);
 
         return card;
       }
@@ -535,6 +583,9 @@
               ok = false;
             }
           }
+          if (slide.full_image && !slide.image) {
+            ok = false;
+          }
         });
         return ok;
       }
@@ -556,6 +607,7 @@
             if (slide.duration !== undefined && slide.duration !== null && slide.duration !== "") {
               out.duration = Number(slide.duration);
             }
+            if (slide.full_image) { out.full_image = true; }
             return out;
           }),
         };

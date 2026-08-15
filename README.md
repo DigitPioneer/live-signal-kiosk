@@ -102,7 +102,8 @@ needed, though a hard refresh forces it immediately). Schema:
       "subtitle": "string, optional",
       "message": "string, optional, may contain \n for line breaks",
       "image": "string, optional, relative path under assets/",
-      "duration": "number, optional, seconds — falls back to default_duration_seconds"
+      "duration": "number, optional, seconds — falls back to default_duration_seconds",
+      "full_image": "boolean, optional, default false — see below"
     }
   ]
 }
@@ -124,12 +125,33 @@ Example:
 }
 ```
 
+**Full-screen image slides:** set `"full_image": true` on a slide to show
+its `image` filling the whole screen — no logo header, no title/subtitle/
+message, letterboxed (not cropped) if its aspect ratio doesn't match the
+TV. `image` is required when `full_image` is `true`; `title` is still
+required by the schema but isn't shown for this slide type. Omit
+`full_image` entirely (the default) for the normal logo-header + text
+layout — existing slides with no `full_image` field are unaffected.
+
+```json
+{
+  "title": "This Week's Flyer",
+  "image": "flyer-2026-08-16.png",
+  "full_image": true,
+  "duration": 10
+}
+```
+
 The church logo at [web/assets/src-logo.png](web/assets/src-logo.png) ships
 as a placeholder. Replace it with your church's real logo — **keep the same
-filename** so `waiting.html` doesn't need editing.
+filename** so `waiting.html` doesn't need editing. Replacing the logo or any
+slide image (by hand or through the editor) shows up on the waiting screen
+on its own within the next periodic slide refresh — no `systemctl restart
+kiosk` needed.
 
 You can also edit slides through the browser-based slide editor (see below)
-instead of hand-editing the JSON.
+instead of hand-editing the JSON, including toggling a slide between the
+normal text layout and a full-screen image.
 
 ## Slide editor (optional)
 

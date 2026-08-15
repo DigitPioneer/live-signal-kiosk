@@ -188,6 +188,18 @@ def validate_slides_doc(data):
                 400, "slide {} has an invalid image filename".format(i)
             )
 
+        full_image = slide.get("full_image")
+        if full_image is not None:
+            if not isinstance(full_image, bool):
+                raise EditorError(400, "slide {} full_image must be true or false".format(i))
+            if full_image:
+                if not normalized.get("image"):
+                    raise EditorError(
+                        400,
+                        "slide {} is a full-screen image slide but has no image".format(i),
+                    )
+                normalized["full_image"] = True
+
         duration = slide.get("duration")
         if duration is not None:
             if not isinstance(duration, (int, float)) or isinstance(duration, bool):

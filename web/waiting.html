@@ -101,6 +101,19 @@
     margin-bottom: 3vh;
   }
 
+  .slide.full-image {
+    position: fixed;
+    inset: 0;
+    padding: 0;
+    background: var(--bg);
+  }
+
+  .slide-fullimage {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+  }
+
   footer {
     flex: 0 0 auto;
     text-align: center;
@@ -114,28 +127,52 @@
 </style>
 </head>
 <body>
-  <header>
-    <img src="assets/src-logo.png" alt="Church Logo">
+  <header id="site-header">
+    <img id="logo-img" src="assets/src-logo.png" alt="Church Logo">
   </header>
   <main id="slides-container"></main>
-  <footer>Waiting for Signal</footer>
+  <footer id="site-footer">Waiting for Signal</footer>
 
   <script>
     (function () {
       var container = document.getElementById("slides-container");
+      var headerEl = document.getElementById("site-header");
+      var footerEl = document.getElementById("site-footer");
+      var logoImg = document.getElementById("logo-img");
       var slides = [];
       var defaultDuration = 10;
       var currentIndex = -1;
       var timerId = null;
+      // Recomputed on every slides.json fetch and appended to every image
+      // URL, so a replaced logo/slide image loads fresh instead of showing
+      // whatever Chromium had cached under the old URL.
+      var cacheBust = Date.now();
+
+      function withCacheBust(relativePath) {
+        return "assets/" + relativePath + "?v=" + cacheBust;
+      }
 
       function buildSlideElement(slide) {
         var el = document.createElement("div");
+
+        if (slide.full_image) {
+          el.className = "slide full-image";
+          if (slide.image) {
+            var fullImg = document.createElement("img");
+            fullImg.className = "slide-fullimage";
+            fullImg.src = withCacheBust(slide.image);
+            fullImg.alt = "";
+            el.appendChild(fullImg);
+          }
+          return el;
+        }
+
         el.className = "slide";
 
         if (slide.image) {
           var img = document.createElement("img");
           img.className = "slide-image";
-          img.src = "assets/" + slide.image;
+          img.src = withCacheBust(slide.image);
           img.alt = "";
           el.appendChild(img);
         }
@@ -167,6 +204,11 @@
         els.forEach(function (el, i) {
           el.classList.toggle("active", i === index);
         });
+
+        var current = slides[index];
+        var isFullImage = !!(current && current.full_image);
+        headerEl.style.display = isFullImage ? "none" : "";
+        footerEl.style.display = isFullImage ? "none" : "";
       }
 
       function scheduleNext() {
@@ -184,6 +226,9 @@
       }
 
       function render(data) {
+        cacheBust = Date.now();
+        logoImg.src = "assets/src-logo.png?v=" + cacheBust;
+
         defaultDuration = data.default_duration_seconds || 10;
         slides = Array.isArray(data.slides) ? data.slides : [];
 
