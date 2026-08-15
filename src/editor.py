@@ -171,6 +171,7 @@ class EditorError(Exception):
 # ---------------------------------------------------------------------------
 
 _SAFE_IMAGE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+_HEX_COLOR_RE = re.compile(r"^#(?:[0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$")
 
 
 def validate_slides_doc(data):
@@ -186,6 +187,18 @@ def validate_slides_doc(data):
         raise EditorError(400, "default_duration_seconds must be a number")
     if default_duration <= 0:
         raise EditorError(400, "default_duration_seconds must be positive")
+
+    logo_max_height_vh = data.get("logo_max_height_vh", 12)
+    if not isinstance(logo_max_height_vh, (int, float)) or isinstance(logo_max_height_vh, bool):
+        raise EditorError(400, "logo_max_height_vh must be a number")
+    if logo_max_height_vh <= 0:
+        raise EditorError(400, "logo_max_height_vh must be positive")
+
+    background_color = data.get("background_color", "#0b1020")
+    if not isinstance(background_color, str) or not _HEX_COLOR_RE.match(background_color):
+        raise EditorError(
+            400, "background_color must be a hex color like #0b1020 or #fff"
+        )
 
     slides = data.get("slides")
     if not isinstance(slides, list):
@@ -239,6 +252,8 @@ def validate_slides_doc(data):
 
     return {
         "default_duration_seconds": default_duration,
+        "logo_max_height_vh": logo_max_height_vh,
+        "background_color": background_color,
         "slides": normalized_slides,
     }
 

@@ -130,6 +130,13 @@
     min-height: 50px;
   }
 
+  input[type="color"] {
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    background: none;
+    cursor: pointer;
+  }
+
   .invalid {
     border-color: var(--danger) !important;
   }
@@ -316,6 +323,20 @@
   </div>
 
   <div class="panel">
+    <h2>Appearance</h2>
+    <div class="field-row">
+      <div class="field">
+        <label>Logo size (% of screen height)</label>
+        <input type="number" id="logo-max-height" min="4" max="35" step="1" style="width: 120px;">
+      </div>
+      <div class="field">
+        <label>Background color</label>
+        <input type="color" id="background-color" style="width: 120px; height: 36px; padding: 2px;">
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
     <h2>Default slide duration (seconds)</h2>
     <input type="number" id="default-duration" min="1" step="1" style="width: 120px;">
   </div>
@@ -332,12 +353,22 @@
       var statusBar = document.getElementById("status-bar");
       var slidesContainer = document.getElementById("slides-container");
       var defaultDurationInput = document.getElementById("default-duration");
+      var logoMaxHeightInput = document.getElementById("logo-max-height");
+      var backgroundColorInput = document.getElementById("background-color");
       var logoPreview = document.getElementById("logo-preview");
       var adminModeBanner = document.getElementById("admin-mode-banner");
       var wifiCurrentEl = document.getElementById("wifi-current");
       var wifiNetworkListEl = document.getElementById("wifi-network-list");
 
-      var state = { default_duration_seconds: 10, slides: [] };
+      var LOGO_MAX_HEIGHT_MIN = 4;
+      var LOGO_MAX_HEIGHT_MAX = 35;
+
+      var state = {
+        default_duration_seconds: 10,
+        logo_max_height_vh: 12,
+        background_color: "#0b1020",
+        slides: [],
+      };
 
       function showStatus(message, isError) {
         statusBar.textContent = message;
@@ -367,6 +398,8 @@
         apiFetch("/api/slides")
           .then(function (data) {
             state.default_duration_seconds = data.default_duration_seconds || 10;
+            state.logo_max_height_vh = data.logo_max_height_vh || 12;
+            state.background_color = data.background_color || "#0b1020";
             state.slides = Array.isArray(data.slides) ? data.slides : [];
             render();
           })
@@ -612,6 +645,8 @@
 
       function render() {
         defaultDurationInput.value = state.default_duration_seconds;
+        logoMaxHeightInput.value = state.logo_max_height_vh;
+        backgroundColorInput.value = state.background_color;
         slidesContainer.innerHTML = "";
         state.slides.forEach(function (slide, index) {
           slidesContainer.appendChild(buildSlideCard(slide, index));
@@ -676,8 +711,13 @@
           return;
         }
 
+        var logoMaxHeight = Number(logoMaxHeightInput.value) || 12;
+        logoMaxHeight = Math.min(LOGO_MAX_HEIGHT_MAX, Math.max(LOGO_MAX_HEIGHT_MIN, logoMaxHeight));
+
         var payload = {
           default_duration_seconds: Number(defaultDurationInput.value) || 10,
+          logo_max_height_vh: logoMaxHeight,
+          background_color: backgroundColorInput.value || "#0b1020",
           slides: state.slides.map(function (slide) {
             var out = { title: slide.title };
             if (slide.subtitle) { out.subtitle = slide.subtitle; }

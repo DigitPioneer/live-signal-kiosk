@@ -228,6 +228,10 @@
       function render(data) {
         cacheBust = Date.now();
         logoImg.src = "assets/src-logo.png?v=" + cacheBust;
+        logoImg.style.maxHeight = (data.logo_max_height_vh || 12) + "vh";
+        document.documentElement.style.setProperty(
+          "--bg", data.background_color || "#0b1020"
+        );
 
         defaultDuration = data.default_duration_seconds || 10;
         slides = Array.isArray(data.slides) ? data.slides : [];
