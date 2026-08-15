@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LiveSignal Kiosk</title>
+<style>
+  :root {
+    --bg: #0b1020;
+    --fg: #f5f7ff;
+    --accent: #6ea8fe;
+    --muted: #a9b4d0;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    background: var(--bg);
+    color: var(--fg);
+    overflow: hidden;
+    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  }
+
+  body {
+    display: flex;
+    flex-direction: column;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 3vh 5% 1vh 5%;
+    flex: 0 0 auto;
+  }
+
+  header img {
+    max-height: 12vh;
+    max-width: 40vw;
+    object-fit: contain;
+  }
+
+  main {
+    flex: 1 1 auto;
+    position: relative;
+    padding: 0 5% 5% 5%;
+  }
+
+  .slide {
+    position: absolute;
+    inset: 0;
+    padding: 0 5%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    opacity: 0;
+    transition: opacity 0.8s ease-in-out;
+    pointer-events: none;
+  }
+
+  .slide.active {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .slide-title {
+    font-size: 8vw;
+    line-height: 1.05;
+    font-weight: 700;
+    margin: 0 0 2vh 0;
+    letter-spacing: -0.01em;
+  }
+
+  .slide-subtitle {
+    font-size: 3.2vw;
+    color: var(--accent);
+    font-weight: 600;
+    margin: 0 0 3vh 0;
+  }
+
+  .slide-message {
+    font-size: 2.6vw;
+    color: var(--muted);
+    line-height: 1.5;
+    white-space: pre-line;
+    max-width: 90%;
+  }
+
+  .slide-image {
+    max-width: 60%;
+    max-height: 35vh;
+    object-fit: contain;
+    margin-bottom: 3vh;
+  }
+
+  footer {
+    flex: 0 0 auto;
+    text-align: center;
+    padding: 0 5% 3vh 5%;
+    color: var(--muted);
+    font-size: 1.6vw;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    opacity: 0.6;
+  }
+</style>
+</head>
+<body>
+  <header>
+    <img src="assets/src-logo.png" alt="Church Logo">
+  </header>
+  <main id="slides-container"></main>
+  <footer>Waiting for Signal</footer>
+
+  <script>
+    (function () {
+      var container = document.getElementById("slides-container");
+      var slides = [];
+      var defaultDuration = 10;
+      var currentIndex = -1;
+      var timerId = null;
+
+      function buildSlideElement(slide) {
+        var el = document.createElement("div");
+        el.className = "slide";
+
+        if (slide.image) {
+          var img = document.createElement("img");
+          img.className = "slide-image";
+          img.src = "assets/" + slide.image;
+          img.alt = "";
+          el.appendChild(img);
+        }
+
+        var title = document.createElement("div");
+        title.className = "slide-title";
+        title.textContent = slide.title || "";
+        el.appendChild(title);
+
+        if (slide.subtitle) {
+          var subtitle = document.createElement("div");
+          subtitle.className = "slide-subtitle";
+          subtitle.textContent = slide.subtitle;
+          el.appendChild(subtitle);
+        }
+
+        if (slide.message) {
+          var message = document.createElement("div");
+          message.className = "slide-message";
+          message.textContent = slide.message;
+          el.appendChild(message);
+        }
+
+        return el;
+      }
+
+      function showSlide(index) {
+        var els = container.querySelectorAll(".slide");
+        els.forEach(function (el, i) {
+          el.classList.toggle("active", i === index);
+        });
+      }
+
+      function scheduleNext() {
+        if (slides.length === 0) {
+          return;
+        }
+        var current = slides[currentIndex];
+        var duration = (current && current.duration) || defaultDuration;
+
+        timerId = window.setTimeout(function () {
+          currentIndex = (currentIndex + 1) % slides.length;
+          showSlide(currentIndex);
+          scheduleNext();
+        }, duration * 1000);
+      }
+
+      function render(data) {
+        defaultDuration = data.default_duration_seconds || 10;
+        slides = Array.isArray(data.slides) ? data.slides : [];
+
+        container.innerHTML = "";
+        slides.forEach(function (slide) {
+          container.appendChild(buildSlideElement(slide));
+        });
+
+        if (timerId !== null) {
+          window.clearTimeout(timerId);
+          timerId = null;
+        }
+
+        if (slides.length > 0) {
+          currentIndex = 0;
+          showSlide(currentIndex);
+          scheduleNext();
+        }
+      }
+
+      function loadSlides() {
+        fetch("slides.json", { cache: "no-store" })
+          .then(function (response) {
+            if (!response.ok) {
+              throw new Error("HTTP " + response.status);
+            }
+            return response.json();
+          })
+          .then(render)
+          .catch(function (err) {
+            console.error("Failed to load slides.json:", err);
+          });
+      }
+
+      loadSlides();
+      // Periodically re-fetch so edits to slides.json show up without a
+      // manual restart of the kiosk session.
+      window.setInterval(loadSlides, 5 * 60 * 1000);
+    })();
+  </script>
+</body>
+</html>

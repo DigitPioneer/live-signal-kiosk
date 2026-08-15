@@ -1,0 +1,9 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Runtime artifacts (normally live outside the repo, but ignore just in case)
+*.log
+.cache/
+chromium-profile/

@@ -1,0 +1,7 @@
+# This repo is deployed exclusively on Linux (Raspberry Pi OS / Debian /
+# Ubuntu). Force LF line endings regardless of the cloning platform's git
+# config - CRLF would break shell script shebangs and silent-boot.sh's
+# single-line cmdline.txt handling.
+* text=auto eol=lf
+
+*.png binary

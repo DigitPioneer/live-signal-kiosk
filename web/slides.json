@@ -1,0 +1,35 @@
+{
+  "default_duration_seconds": 10,
+  "slides": [
+    {
+      "title": "Waiting for Signal",
+      "subtitle": "The broadcast will begin shortly",
+      "message": "Thanks for joining us.\nThis screen will switch automatically when we go live.",
+      "duration": 8
+    },
+    {
+      "title": "Service Times",
+      "subtitle": "Join us in person or online",
+      "message": "Sundays at 9:00 AM & 11:00 AM\nWednesdays at 7:00 PM",
+      "duration": 10
+    },
+    {
+      "title": "Give Online",
+      "subtitle": "Support the ministry",
+      "message": "Visit give.example-church.org\nor text GIVE to (555) 010-0100",
+      "duration": 10
+    },
+    {
+      "title": "Visit Our Website",
+      "subtitle": "Sermons, events, and more",
+      "message": "www.example-church.org",
+      "duration": 10
+    },
+    {
+      "title": "Follow Us",
+      "subtitle": "Stay connected throughout the week",
+      "message": "Facebook & Instagram: @ExampleChurch\nYouTube: @SRCMinistry",
+      "duration": 10
+    }
+  ]
+}
