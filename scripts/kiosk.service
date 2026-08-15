@@ -16,5 +16,12 @@ ExecStart=__APP_DIR__/scripts/start-kiosk.sh
 Restart=always
 RestartSec=3
 
+# /run/live-signal-kiosk, owned by __KIOSK_USER__ - holds the watcher's
+# pidfile (read by scripts/toggle-admin-mode.sh to send SIGUSR1) and the
+# exit-admin sentinel file the local admin editor writes. Created fresh by
+# systemd before each start and removed after stop.
+RuntimeDirectory=live-signal-kiosk
+RuntimeDirectoryMode=0750
+
 [Install]
 WantedBy=graphical.target

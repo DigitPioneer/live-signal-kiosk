@@ -32,6 +32,7 @@ apt-get install -y \
   python3 \
   git \
   curl \
+  sudo \
   xserver-xorg \
   xinit \
   x11-xserver-utils \
@@ -41,6 +42,13 @@ apt-get install -y \
 # unclutter's package name / availability varies by distro - best effort.
 if ! apt-get install -y unclutter; then
   echo "install.sh: warning - could not install unclutter, continuing without it"
+fi
+
+# NetworkManager (nmcli) powers the admin panel's Wi-Fi status/scan/connect
+# actions. Raspberry Pi OS Bullseye+ ships it by default; best-effort on
+# other distros since some may intentionally use a different network stack.
+if ! apt-get install -y network-manager; then
+  echo "install.sh: warning - could not install network-manager, Wi-Fi actions in the admin panel won't work"
 fi
 
 # Chromium's package name varies by distro/version - try both.
@@ -118,12 +126,40 @@ chmod +x \
   "${APP_DIR}/scripts/xsession.sh" \
   "${APP_DIR}/scripts/setup-lite-kiosk.sh" \
   "${APP_DIR}/scripts/silent-boot.sh" \
+  "${APP_DIR}/scripts/system-helper.sh" \
+  "${APP_DIR}/scripts/toggle-admin-mode.sh" \
   "${APP_DIR}/src/editor.py" \
   "${APP_DIR}/install.sh" \
   "${APP_DIR}/update.sh"
 
 systemctl daemon-reload
 systemctl enable kiosk.service
+
+# --- 5b. sudoers grant for system-helper.sh (reboot/restart/Wi-Fi) ----------
+#
+# Narrow, validated grant: the kiosk user may run exactly one script as
+# root with no password, and that script (scripts/system-helper.sh)
+# whitelists its own arguments. Validated with `visudo -c` before install
+# so a bad render can never corrupt sudo's config - if validation fails,
+# the file is NOT installed and those admin-panel actions just won't work
+# until it's fixed, rather than risking system sudo access.
+SUDOERS_SRC="${APP_DIR}/scripts/system-helper.sudoers"
+SUDOERS_DEST="/etc/sudoers.d/live-signal-kiosk"
+SUDOERS_TMP="$(mktemp)"
+
+sed \
+  -e "s#__APP_DIR__#${APP_DIR}#g" \
+  -e "s#__KIOSK_USER__#${KIOSK_USER}#g" \
+  "${SUDOERS_SRC}" > "${SUDOERS_TMP}"
+
+if visudo -c -f "${SUDOERS_TMP}" >/dev/null 2>&1; then
+  install -m 0440 -o root -g root "${SUDOERS_TMP}" "${SUDOERS_DEST}"
+  echo "install.sh: installed ${SUDOERS_DEST}"
+else
+  echo "install.sh: WARNING - generated sudoers file failed validation, NOT installed." >&2
+  echo "install.sh: reboot/restart/Wi-Fi-connect actions in the admin panel will not work until this is fixed." >&2
+fi
+rm -f "${SUDOERS_TMP}"
 
 # --- 6. Log directory ---------------------------------------------------------
 
@@ -177,4 +213,9 @@ editing - no reason to leave it running otherwise). Turn it on with:
 ${CONFIG_FILE} as EDITOR_USERNAME/EDITOR_PASSWORD - change EDITOR_PASSWORD
 from the default before exposing it on your network). Turn it back off with:
     sudo systemctl disable --now kiosk-editor
+
+With a keyboard plugged directly into this device, press Ctrl+Alt+Escape to
+break out to a local admin session (same login as above) even with no
+network - useful for fixing Wi-Fi on first setup. Press it again, or use the
+"Return to Kiosk Display" button, to go back. See README.md for details.
 EOF

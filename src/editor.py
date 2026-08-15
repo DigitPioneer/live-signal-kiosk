@@ -17,9 +17,13 @@ import mimetypes
 import os
 import re
 import secrets
+import shutil
+import signal
+import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.parse
 
 from envfile import parse_env_file
@@ -35,6 +39,8 @@ ASSETS_DIR = os.path.join(WEB_DIR, "assets")
 WEB_ADMIN_DIR = os.path.join(APP_DIR, "web-admin")
 INDEX_HTML_PATH = os.path.join(WEB_ADMIN_DIR, "index.html")
 SLIDES_PATH = os.path.join(WEB_DIR, "slides.json")
+SCRIPTS_DIR = os.path.join(APP_DIR, "scripts")
+SYSTEM_HELPER_PATH = os.path.join(SCRIPTS_DIR, "system-helper.sh")
 
 INSTALLED_CONFIG_PATH = "/etc/live-signal-kiosk/config.env"
 FALLBACK_CONFIG_PATH = os.path.join(APP_DIR, "config.example.env")
@@ -42,10 +48,24 @@ FALLBACK_CONFIG_PATH = os.path.join(APP_DIR, "config.example.env")
 LOG_DIR = "/var/log/live-signal-kiosk"
 LOG_FILE = os.path.join(LOG_DIR, "editor.log")
 
+# Also used by src/watcher.py when it runs a local-only instance of this
+# server for the admin-mode breakout (see RUN_DIR/watcher.pid there).
+RUN_DIR = "/run/live-signal-kiosk"
+EXIT_ADMIN_SENTINEL_PATH = os.path.join(RUN_DIR, "exit-admin-requested")
+
+# Chromium profile dirs created by watcher.py - cleared by the "clear
+# Chromium cache" system action. Kept in sync with watcher.py's own
+# CHROMIUM_PROFILE_DIR / ADMIN_CHROMIUM_PROFILE_DIR paths.
+CHROMIUM_PROFILE_DIRS = [
+    os.path.expanduser("~/.cache/live-signal-kiosk/chromium-profile"),
+    os.path.expanduser("~/.cache/live-signal-kiosk/chromium-admin-profile"),
+]
+
 LOGO_FILENAME = "src-logo.png"
 
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # a few MB, per spec
 MAX_SLIDES_BODY_BYTES = 2 * 1024 * 1024
+MAX_SYSTEM_BODY_BYTES = 4 * 1024
 # Upper bound on how much of an oversized request body we'll drain before
 # responding - keeps a well-behaved client's connection clean without
 # fully buffering an absurdly large (many-GB) body.
@@ -96,6 +116,13 @@ def setup_logging():
 
     logger = logging.getLogger("livesignal.editor")
     logger.setLevel(level)
+    # "livesignal.editor" is a child of watcher.py's "livesignal" logger in
+    # Python's dotted logger hierarchy. When watcher.py imports this module
+    # for the local-admin breakout, records would otherwise propagate up
+    # and get handled a second time by watcher's own handlers (duplicate
+    # lines in stdout/watcher.log). This logger's own handlers below are
+    # everything it needs.
+    logger.propagate = False
 
     formatter = logging.Formatter(
         "%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
@@ -383,6 +410,60 @@ def save_uploaded_image(file_bytes, requested_filename, fixed_filename=None):
 
 
 # ---------------------------------------------------------------------------
+# System actions (reboot, restart, Wi-Fi, cache cleanup)
+# ---------------------------------------------------------------------------
+#
+# reboot / restart-kiosk / wifi-connect need root, which this process (run
+# as the unprivileged kiosk user, same as watcher.py) doesn't have. Those
+# go through scripts/system-helper.sh via a narrow passwordless-sudo grant
+# installed by install.sh (see scripts/system-helper.sudoers) - that script
+# is the only thing sudo trusts, and it validates its own arguments.
+# Cache/asset cleanup needs no privilege since the kiosk user already owns
+# those directories.
+
+
+def run_system_helper(args, timeout=20):
+    """Runs scripts/system-helper.sh via sudo. Returns the completed
+    subprocess.CompletedProcess. `-n` (non-interactive) means this fails
+    fast with a clear error instead of hanging if the sudoers grant is
+    missing or broken, rather than waiting on a password prompt nothing
+    can ever answer."""
+    cmd = ["sudo", "-n", SYSTEM_HELPER_PATH] + list(args)
+    try:
+        return subprocess.run(cmd, timeout=timeout, capture_output=True, text=True)
+    except subprocess.TimeoutExpired:
+        raise EditorError(504, "system command timed out")
+    except OSError as exc:
+        raise EditorError(500, "failed to run system helper: {}".format(exc))
+
+
+def parse_nmcli_terse_line(line):
+    """Splits one line of `nmcli -t` output on unescaped colons. nmcli
+    escapes literal ':' within a field as '\\:' in terse mode; this handles
+    that but not every edge case (e.g. an SSID containing a literal
+    backslash), which is an acceptable simplification for realistic Wi-Fi
+    SSIDs."""
+    fields = []
+    current = []
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if ch == "\\" and i + 1 < len(line):
+            current.append(line[i + 1])
+            i += 2
+            continue
+        if ch == ":":
+            fields.append("".join(current))
+            current = []
+            i += 1
+            continue
+        current.append(ch)
+        i += 1
+    fields.append("".join(current))
+    return fields
+
+
+# ---------------------------------------------------------------------------
 # HTTP handler
 # ---------------------------------------------------------------------------
 
@@ -481,6 +562,12 @@ class EditorRequestHandler(http.server.BaseHTTPRequestHandler):
                 self._serve_index()
             elif path == "/api/slides":
                 self._serve_slides()
+            elif path == "/api/mode":
+                self._serve_mode()
+            elif path == "/api/system/wifi/status":
+                self._handle_wifi_status()
+            elif path == "/api/system/wifi/scan":
+                self._handle_wifi_scan()
             elif path.startswith("/assets/"):
                 self._serve_asset(path[len("/assets/"):])
             else:
@@ -503,6 +590,18 @@ class EditorRequestHandler(http.server.BaseHTTPRequestHandler):
                 self._handle_upload(fixed_filename=None)
             elif path == "/api/logo":
                 self._handle_upload(fixed_filename=LOGO_FILENAME)
+            elif path == "/api/system/reboot":
+                self._handle_reboot()
+            elif path == "/api/system/restart-kiosk":
+                self._handle_restart_kiosk()
+            elif path == "/api/system/wifi/connect":
+                self._handle_wifi_connect()
+            elif path == "/api/system/clear-chromium-cache":
+                self._handle_clear_chromium_cache()
+            elif path == "/api/system/clear-unused-images":
+                self._handle_clear_unused_images()
+            elif path == "/api/local-admin/exit":
+                self._handle_local_admin_exit()
             else:
                 self._send_error_json(404, "not found")
         except EditorError as exc:
@@ -593,10 +692,177 @@ class EditorRequestHandler(http.server.BaseHTTPRequestHandler):
         )
         self._send_json({"ok": True, "filename": filename})
 
+    # -- mode / local-admin breakout ------------------------------------
 
-def start_editor_server(port):
-    server = http.server.ThreadingHTTPServer(("0.0.0.0", port), EditorRequestHandler)
-    log.info("Slide editor listening on 0.0.0.0:%s", port)
+    def _serve_mode(self):
+        self._send_json({"local_admin": bool(getattr(self.server, "is_local_admin", False))})
+
+    def _handle_local_admin_exit(self):
+        if not getattr(self.server, "is_local_admin", False):
+            # This route only means something on the local-only instance
+            # the watcher starts for admin mode - reject it on the normal
+            # LAN-facing kiosk-editor.service instance rather than quietly
+            # no-op'ing, so a misconfigured client fails loudly.
+            raise EditorError(404, "not found")
+
+        try:
+            os.makedirs(RUN_DIR, exist_ok=True)
+            with open(EXIT_ADMIN_SENTINEL_PATH, "w", encoding="utf-8") as f:
+                f.write(str(time.time()))
+        except OSError as exc:
+            log.error("Failed to write exit-admin sentinel: %s", exc)
+            raise EditorError(500, "failed to request exit")
+
+        log.info("Local admin exit requested by %s", self.address_string())
+        self._send_json({"ok": True})
+
+    # -- system actions ---------------------------------------------------
+
+    def _handle_reboot(self):
+        log.warning("Reboot requested by %s", self.address_string())
+        result = run_system_helper(["reboot"])
+        if result.returncode != 0:
+            raise EditorError(
+                500, "reboot failed: {}".format((result.stderr or "").strip()[:300])
+            )
+        self._send_json({"ok": True})
+
+    def _handle_restart_kiosk(self):
+        log.warning("Kiosk service restart requested by %s", self.address_string())
+        result = run_system_helper(["restart-kiosk"])
+        if result.returncode != 0:
+            raise EditorError(
+                500, "restart failed: {}".format((result.stderr or "").strip()[:300])
+            )
+        self._send_json({"ok": True})
+
+    def _handle_wifi_status(self):
+        try:
+            result = subprocess.run(
+                ["nmcli", "-t", "-f", "ACTIVE,SSID", "dev", "wifi"],
+                timeout=15,
+                capture_output=True,
+                text=True,
+            )
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            raise EditorError(500, "could not query Wi-Fi status: {}".format(exc))
+
+        connected_ssid = None
+        for line in (result.stdout or "").splitlines():
+            fields = parse_nmcli_terse_line(line)
+            if len(fields) >= 2 and fields[0] == "yes":
+                connected_ssid = fields[1]
+                break
+
+        self._send_json({"connected_ssid": connected_ssid})
+
+    def _handle_wifi_scan(self):
+        try:
+            result = subprocess.run(
+                ["nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY", "dev", "wifi", "list"],
+                timeout=20,
+                capture_output=True,
+                text=True,
+            )
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            raise EditorError(500, "could not scan Wi-Fi networks: {}".format(exc))
+
+        networks = []
+        seen = set()
+        for line in (result.stdout or "").splitlines():
+            fields = parse_nmcli_terse_line(line)
+            if len(fields) < 3:
+                continue
+            ssid, signal_str, security = fields[0], fields[1], fields[2]
+            if not ssid or ssid in seen:
+                continue
+            seen.add(ssid)
+            try:
+                signal_val = int(signal_str)
+            except ValueError:
+                signal_val = None
+            networks.append({"ssid": ssid, "signal": signal_val, "security": security or None})
+
+        networks.sort(key=lambda n: n["signal"] if n["signal"] is not None else -1, reverse=True)
+        self._send_json({"networks": networks})
+
+    def _handle_wifi_connect(self):
+        raw_body = self._read_body(MAX_SYSTEM_BODY_BYTES)
+        try:
+            data = json.loads(raw_body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise EditorError(400, "invalid JSON: {}".format(exc))
+
+        ssid = data.get("ssid")
+        password = data.get("password", "")
+        if not isinstance(ssid, str) or not ssid.strip():
+            raise EditorError(400, "ssid is required")
+        if not isinstance(password, str):
+            raise EditorError(400, "password must be a string")
+
+        log.info("Wi-Fi connect requested by %s (ssid=%s)", self.address_string(), ssid)
+        args = ["wifi-connect", ssid] + ([password] if password else [])
+        result = run_system_helper(args, timeout=30)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()[:300]
+            raise EditorError(502, "failed to connect: {}".format(detail))
+        self._send_json({"ok": True})
+
+    def _handle_clear_chromium_cache(self):
+        cleared = []
+        for profile_dir in CHROMIUM_PROFILE_DIRS:
+            if not os.path.isdir(profile_dir):
+                continue
+            try:
+                shutil.rmtree(profile_dir)
+            except OSError as exc:
+                log.error("Failed to clear %s: %s", profile_dir, exc)
+                raise EditorError(500, "failed to clear cache: {}".format(exc))
+            cleared.append(profile_dir)
+
+        log.info("Chromium cache cleared by %s: %s", self.address_string(), cleared)
+        self._send_json({"ok": True, "cleared": cleared})
+
+    def _handle_clear_unused_images(self):
+        try:
+            with open(SLIDES_PATH, "r", encoding="utf-8") as f:
+                doc = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise EditorError(500, "could not read slides.json: {}".format(exc))
+
+        referenced = {LOGO_FILENAME}
+        for slide in doc.get("slides", []):
+            if isinstance(slide, dict) and slide.get("image"):
+                referenced.add(slide["image"])
+
+        removed = []
+        try:
+            for name in os.listdir(ASSETS_DIR):
+                if name in referenced:
+                    continue
+                full_path = os.path.join(ASSETS_DIR, name)
+                if os.path.isfile(full_path):
+                    os.remove(full_path)
+                    removed.append(name)
+        except OSError as exc:
+            raise EditorError(500, "failed to clean up assets: {}".format(exc))
+
+        log.info("Unused images cleared by %s: %s", self.address_string(), removed)
+        self._send_json({"ok": True, "removed": removed})
+
+
+def start_editor_server(port, bind_host="0.0.0.0", local_admin=False):
+    server = http.server.ThreadingHTTPServer((bind_host, port), EditorRequestHandler)
+    server.is_local_admin = local_admin
+
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    log.info(
+        "Slide editor listening on %s:%s%s",
+        bind_host,
+        port,
+        " (local admin mode)" if local_admin else "",
+    )
     return server
 
 
@@ -610,14 +876,24 @@ def main():
             CONFIG["_source_path"],
         )
 
+    stop_event = threading.Event()
+
+    def _handle_signal(signum, _frame):
+        log.info("Received signal %s, shutting down", signum)
+        stop_event.set()
+
+    signal.signal(signal.SIGTERM, _handle_signal)
+    signal.signal(signal.SIGINT, _handle_signal)
+
+    # start_editor_server() already runs its own background thread, so
+    # this just blocks the main thread until a shutdown signal arrives.
     server = start_editor_server(CONFIG["EDITOR_PORT"])
     try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
+        stop_event.wait()
     finally:
         log.info("Slide editor shutting down")
         server.shutdown()
+        server.server_close()
 
 
 if __name__ == "__main__":

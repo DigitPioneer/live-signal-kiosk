@@ -216,6 +216,56 @@
     color: var(--muted);
     font-size: 0.8rem;
   }
+
+  #admin-mode-banner {
+    display: none;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    background: rgba(110, 168, 254, 0.15);
+    border: 1px solid var(--accent);
+    color: var(--fg);
+    border-radius: 8px;
+    padding: 10px 14px;
+    margin-bottom: 16px;
+    font-size: 0.9rem;
+  }
+
+  .network-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 10px 0;
+  }
+
+  .network-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    background: #10162c;
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 0.85rem;
+  }
+
+  .network-row .network-name {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .network-row .network-name strong {
+    font-weight: 600;
+  }
+
+  .system-actions {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-top: 8px;
+  }
 </style>
 </head>
 <body>
@@ -225,7 +275,33 @@
     directly to <code>web/slides.json</code>.
   </p>
 
+  <div id="admin-mode-banner">
+    <span>You're in local admin mode on this device's own screen (not reachable over the network).</span>
+    <button id="return-to-kiosk-btn" class="secondary">Return to Kiosk Display</button>
+  </div>
+
   <div id="status-bar"></div>
+
+  <div class="panel">
+    <h2>System</h2>
+
+    <div>
+      <strong>Wi-Fi:</strong> <span id="wifi-current">checking...</span>
+      <div class="system-actions">
+        <button id="wifi-scan-btn" class="secondary">Scan for Networks</button>
+      </div>
+      <div id="wifi-network-list" class="network-list"></div>
+    </div>
+
+    <hr style="border-color: var(--panel-border); margin: 14px 0;">
+
+    <div class="system-actions">
+      <button id="clear-cache-btn" class="secondary">Clear Chromium Cache</button>
+      <button id="clear-unused-images-btn" class="secondary">Clear Unused Images</button>
+      <button id="restart-kiosk-btn" class="secondary">Restart Kiosk Display</button>
+      <button id="reboot-btn" class="danger">Reboot Device</button>
+    </div>
+  </div>
 
   <div class="panel">
     <h2>Church Logo</h2>
@@ -257,6 +333,9 @@
       var slidesContainer = document.getElementById("slides-container");
       var defaultDurationInput = document.getElementById("default-duration");
       var logoPreview = document.getElementById("logo-preview");
+      var adminModeBanner = document.getElementById("admin-mode-banner");
+      var wifiCurrentEl = document.getElementById("wifi-current");
+      var wifiNetworkListEl = document.getElementById("wifi-network-list");
 
       var state = { default_duration_seconds: 10, slides: [] };
 
@@ -650,7 +729,163 @@
           });
       };
 
+      // -- local-admin mode detection --------------------------------------
+      // Never hardcode a port here - the server tells us whether this page
+      // is being served from the local-only admin instance (see
+      // src/editor.py's GET /api/mode), and only then do we show the
+      // return-to-kiosk control.
+
+      function loadMode() {
+        apiFetch("/api/mode")
+          .then(function (data) {
+            if (data.local_admin) {
+              adminModeBanner.style.display = "flex";
+            }
+          })
+          .catch(function () {
+            // Non-fatal - just means the return-to-kiosk button stays hidden.
+          });
+      }
+
+      document.getElementById("return-to-kiosk-btn").onclick = function () {
+        apiFetch("/api/local-admin/exit", { method: "POST" })
+          .then(function () {
+            showStatus("Returning to kiosk display...", false);
+          })
+          .catch(function (err) {
+            showStatus("Failed to return to kiosk: " + err.message, true);
+          });
+      };
+
+      // -- system actions ---------------------------------------------------
+
+      function loadWifiStatus() {
+        wifiCurrentEl.textContent = "checking...";
+        apiFetch("/api/system/wifi/status")
+          .then(function (data) {
+            wifiCurrentEl.textContent = data.connected_ssid || "not connected";
+          })
+          .catch(function (err) {
+            wifiCurrentEl.textContent = "unknown (" + err.message + ")";
+          });
+      }
+
+      function renderNetworkList(networks) {
+        wifiNetworkListEl.innerHTML = "";
+        networks.forEach(function (net) {
+          var row = document.createElement("div");
+          row.className = "network-row";
+
+          var nameWrap = document.createElement("div");
+          nameWrap.className = "network-name";
+          var name = document.createElement("strong");
+          name.textContent = net.ssid;
+          nameWrap.appendChild(name);
+          if (net.signal !== null && net.signal !== undefined) {
+            var signalEl = document.createElement("span");
+            signalEl.className = "hint";
+            signalEl.textContent = net.signal + "%" + (net.security ? " - " + net.security : "");
+            nameWrap.appendChild(signalEl);
+          }
+          row.appendChild(nameWrap);
+
+          var connectBtn = document.createElement("button");
+          connectBtn.className = "secondary";
+          connectBtn.textContent = "Connect";
+          connectBtn.onclick = function () {
+            var needsPassword = net.security && net.security !== "--" && net.security !== "";
+            var password = "";
+            if (needsPassword) {
+              password = window.prompt("Password for " + net.ssid + ":") || "";
+              if (!password) {
+                return;
+              }
+            }
+            connectBtn.disabled = true;
+            apiFetch("/api/system/wifi/connect", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ ssid: net.ssid, password: password }),
+            })
+              .then(function () {
+                showStatus("Connected to " + net.ssid + ".", false);
+                loadWifiStatus();
+              })
+              .catch(function (err) {
+                showStatus("Wi-Fi connect failed: " + err.message, true);
+              })
+              .finally(function () {
+                connectBtn.disabled = false;
+              });
+          };
+          row.appendChild(connectBtn);
+
+          wifiNetworkListEl.appendChild(row);
+        });
+      }
+
+      document.getElementById("wifi-scan-btn").onclick = function () {
+        wifiNetworkListEl.innerHTML = "<div class=\"hint\">Scanning...</div>";
+        apiFetch("/api/system/wifi/scan")
+          .then(function (data) {
+            renderNetworkList(Array.isArray(data.networks) ? data.networks : []);
+          })
+          .catch(function (err) {
+            showStatus("Wi-Fi scan failed: " + err.message, true);
+            wifiNetworkListEl.innerHTML = "";
+          });
+      };
+
+      document.getElementById("clear-cache-btn").onclick = function () {
+        apiFetch("/api/system/clear-chromium-cache", { method: "POST" })
+          .then(function () {
+            showStatus("Chromium cache cleared.", false);
+          })
+          .catch(function (err) {
+            showStatus("Clear cache failed: " + err.message, true);
+          });
+      };
+
+      document.getElementById("clear-unused-images-btn").onclick = function () {
+        apiFetch("/api/system/clear-unused-images", { method: "POST" })
+          .then(function (data) {
+            var count = Array.isArray(data.removed) ? data.removed.length : 0;
+            showStatus("Removed " + count + " unused image(s).", false);
+          })
+          .catch(function (err) {
+            showStatus("Clear unused images failed: " + err.message, true);
+          });
+      };
+
+      document.getElementById("restart-kiosk-btn").onclick = function () {
+        if (!window.confirm("Restart the kiosk display now? This briefly interrupts the screen.")) {
+          return;
+        }
+        apiFetch("/api/system/restart-kiosk", { method: "POST" })
+          .then(function () {
+            showStatus("Kiosk display restarting...", false);
+          })
+          .catch(function (err) {
+            showStatus("Restart failed: " + err.message, true);
+          });
+      };
+
+      document.getElementById("reboot-btn").onclick = function () {
+        if (!window.confirm("Reboot the whole device now?")) {
+          return;
+        }
+        apiFetch("/api/system/reboot", { method: "POST" })
+          .then(function () {
+            showStatus("Device rebooting...", false);
+          })
+          .catch(function (err) {
+            showStatus("Reboot failed: " + err.message, true);
+          });
+      };
+
       loadSlides();
+      loadMode();
+      loadWifiStatus();
     })();
   </script>
 </body>

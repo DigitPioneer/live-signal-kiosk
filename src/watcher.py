@@ -20,6 +20,7 @@ import threading
 import time
 
 from envfile import parse_env_file
+import editor
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -38,6 +39,21 @@ LOG_FILE = os.path.join(LOG_DIR, "watcher.log")
 CHROMIUM_PROFILE_DIR = os.path.expanduser(
     "~/.cache/live-signal-kiosk/chromium-profile"
 )
+# Separate profile for the windowed admin-mode browser, so it never shares
+# state (cookies, autofill, crash-restore prompts) with the kiosk waiting
+# screen's Chromium instance.
+ADMIN_CHROMIUM_PROFILE_DIR = os.path.expanduser(
+    "~/.cache/live-signal-kiosk/chromium-admin-profile"
+)
+
+# Runtime dir for the watcher's pidfile (read by scripts/toggle-admin-mode.sh
+# to send it SIGUSR1) and the exit-admin sentinel file (written by the local
+# admin editor's POST /api/local-admin/exit - see src/editor.py). Provided
+# by kiosk.service's RuntimeDirectory= on a real install; created here too
+# for local/dev runs where that isn't set up.
+RUN_DIR = "/run/live-signal-kiosk"
+PID_FILE = os.path.join(RUN_DIR, "watcher.pid")
+EXIT_ADMIN_SENTINEL_PATH = editor.EXIT_ADMIN_SENTINEL_PATH
 
 STATE_WAITING = "WAITING"
 STATE_LIVE = "LIVE"
@@ -76,6 +92,7 @@ def load_config():
         "YTDLP_BIN": get("YTDLP_BIN"),
         "KIOSK_USER": get("KIOSK_USER", "kiosk"),
         "LOG_LEVEL": get("LOG_LEVEL", "INFO"),
+        "LOCAL_ADMIN_PORT": get_int("LOCAL_ADMIN_PORT", 8767),
     }
     return config
 
@@ -136,6 +153,59 @@ def start_http_server(port):
     thread.start()
     log.info("Local HTTP server serving %s on 127.0.0.1:%s", WEB_DIR, port)
     return server
+
+
+# ---------------------------------------------------------------------------
+# Pidfile (read by scripts/toggle-admin-mode.sh to signal this process)
+# ---------------------------------------------------------------------------
+
+
+def write_pid_file():
+    try:
+        os.makedirs(RUN_DIR, exist_ok=True)
+        with open(PID_FILE, "w", encoding="utf-8") as f:
+            f.write(str(os.getpid()))
+    except OSError as exc:
+        log.warning(
+            "Could not write pidfile %s (%s) - the admin-mode hotkey won't "
+            "be able to find this process",
+            PID_FILE,
+            exc,
+        )
+
+
+def remove_pid_file():
+    try:
+        os.remove(PID_FILE)
+    except OSError:
+        pass
+
+
+def clear_exit_admin_sentinel():
+    try:
+        os.remove(EXIT_ADMIN_SENTINEL_PATH)
+    except OSError:
+        pass
+
+
+def pause_cursor_hiding():
+    """unclutter (started in xsession.sh) hides the mouse cursor after a
+    short idle period. Admin mode needs the cursor visible/usable, so pause
+    unclutter with SIGSTOP rather than killing it - SIGCONT on exit just
+    resumes its normal idle-hiding behavior with no relaunch needed. A
+    nonzero exit here just means unclutter isn't running (e.g. not
+    installed), which is fine and not logged as an error."""
+    try:
+        subprocess.run(["pkill", "-STOP", "-x", "unclutter"], timeout=5)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        log.warning("Could not pause unclutter: %s", exc)
+
+
+def resume_cursor_hiding():
+    try:
+        subprocess.run(["pkill", "-CONT", "-x", "unclutter"], timeout=5)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        log.warning("Could not resume unclutter: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -391,6 +461,27 @@ def build_mpv_args(stream_url):
     ]
 
 
+def build_admin_chromium_args(port):
+    """Windowed (non-kiosk) Chromium for admin mode - normal window
+    decorations, resizable/closable, not fullscreen, mouse-usable."""
+    os.makedirs(ADMIN_CHROMIUM_PROFILE_DIR, exist_ok=True)
+    url = "http://127.0.0.1:{}/".format(port)
+    return [
+        CHROMIUM_BIN,
+        "--new-window",
+        "--window-size=1200,800",
+        "--noerrdialogs",
+        "--disable-infobars",
+        "--disable-session-crashed-bubble",
+        "--disable-features=TranslateUI",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--check-for-update-interval=31536000",
+        "--user-data-dir={}".format(ADMIN_CHROMIUM_PROFILE_DIR),
+        url,
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
@@ -405,8 +496,20 @@ class Watcher:
         self.children = ChildProcessManager()
         self.http_server = None
         self._stop = threading.Event()
+        self._last_check = 0.0
+
+        # Admin mode: entered/exited via SIGUSR1 (see scripts/toggle-admin-
+        # mode.sh, bound to Ctrl+Alt+Escape in Openbox). While active, the
+        # main loop skips the normal live-check/relaunch state machine -
+        # see _run_loop().
+        self.admin_mode = False
+        self.admin_editor_server = None
+        self._admin_toggle_requested = threading.Event()
 
     def start(self):
+        clear_exit_admin_sentinel()
+        write_pid_file()
+
         self.http_server = start_http_server(self.config["LOCAL_SERVER_PORT"])
         self.children.switch_to(
             "chromium", build_chromium_args(self.config["LOCAL_SERVER_PORT"])
@@ -414,6 +517,7 @@ class Watcher:
 
         signal.signal(signal.SIGTERM, self._handle_signal)
         signal.signal(signal.SIGINT, self._handle_signal)
+        signal.signal(signal.SIGUSR1, self._handle_sigusr1)
 
         self._run_loop()
 
@@ -421,24 +525,102 @@ class Watcher:
         log.info("Received signal %s, shutting down", signum)
         self._stop.set()
 
+    def _handle_sigusr1(self, _signum, _frame):
+        # Keep the handler itself trivial (just flag a request) - the main
+        # loop does the actual work of entering/exiting admin mode, same as
+        # everything else it does.
+        self._admin_toggle_requested.set()
+
     def _run_loop(self):
         interval = self.config["CHECK_INTERVAL_SECONDS"]
-        last_check = 0.0
 
         while not self._stop.is_set():
             try:
+                if self._admin_toggle_requested.is_set():
+                    self._admin_toggle_requested.clear()
+                    self._toggle_admin_mode()
+
                 self.children.check_and_relaunch()
 
-                now = time.time()
-                if now - last_check >= interval:
-                    last_check = now
-                    self._poll_and_transition()
+                if self.admin_mode:
+                    if os.path.exists(EXIT_ADMIN_SENTINEL_PATH):
+                        log.info("Exit-admin sentinel detected")
+                        self._exit_admin_mode()
+                else:
+                    now = time.time()
+                    if now - self._last_check >= interval:
+                        self._last_check = now
+                        self._poll_and_transition()
             except Exception:
                 log.exception("Unhandled error in main loop, continuing")
 
             self._stop.wait(1)
 
         self._shutdown()
+
+    def _toggle_admin_mode(self):
+        if self.admin_mode:
+            self._exit_admin_mode()
+        else:
+            self._enter_admin_mode()
+
+    def _enter_admin_mode(self):
+        log.info("Entering admin mode")
+
+        pause_cursor_hiding()
+
+        port = self.config["LOCAL_ADMIN_PORT"]
+        try:
+            self.admin_editor_server = editor.start_editor_server(
+                port, bind_host="127.0.0.1", local_admin=True
+            )
+        except OSError as exc:
+            log.error(
+                "Failed to start local admin editor server on 127.0.0.1:%s: %s",
+                port,
+                exc,
+            )
+            resume_cursor_hiding()
+            return
+
+        # switch_to() atomically kills whatever's currently on the display
+        # and updates ChildProcessManager's own idea of what should be
+        # running, in one call - there's no window where check_and_relaunch()
+        # could see the old (kiosk) process gone and relaunch it before the
+        # new one is recorded. That's what keeps this safe from the exact
+        # race this design exists to avoid.
+        self.children.switch_to("admin-chromium", build_admin_chromium_args(port))
+
+        self.admin_mode = True
+        clear_exit_admin_sentinel()
+
+    def _exit_admin_mode(self):
+        log.info("Exiting admin mode")
+
+        if self.admin_editor_server is not None:
+            try:
+                self.admin_editor_server.shutdown()
+                self.admin_editor_server.server_close()
+            except Exception:
+                log.exception("Error stopping local admin editor server")
+            self.admin_editor_server = None
+
+        resume_cursor_hiding()
+
+        # Don't trust anything cached from before admin mode: show the
+        # waiting screen immediately (same as a normal Watcher.start()
+        # bootstrap), then force a fresh live check on the very next loop
+        # iteration rather than waiting up to CHECK_INTERVAL_SECONDS.
+        self.state = STATE_WAITING
+        self.current_video_id = None
+        self.consecutive_not_live = 0
+        self.children.switch_to(
+            "chromium", build_chromium_args(self.config["LOCAL_SERVER_PORT"])
+        )
+        self._last_check = 0.0
+
+        self.admin_mode = False
+        clear_exit_admin_sentinel()
 
     def _poll_and_transition(self):
         channel_url = self.config["CHANNEL_LIVE_URL"]
@@ -493,6 +675,18 @@ class Watcher:
         if self.http_server is not None:
             log.info("Stopping local HTTP server")
             self.http_server.shutdown()
+        if self.admin_editor_server is not None:
+            log.info("Stopping local admin editor server")
+            try:
+                self.admin_editor_server.shutdown()
+                self.admin_editor_server.server_close()
+            except Exception:
+                log.exception("Error stopping local admin editor server")
+            self.admin_editor_server = None
+        if self.admin_mode:
+            resume_cursor_hiding()
+        remove_pid_file()
+        clear_exit_admin_sentinel()
         log.info("Watcher exited cleanly")
 
 

@@ -101,6 +101,28 @@ periodically on its own. If you don't see your edit:
 - Force it immediately instead of waiting for the periodic re-fetch:
   `sudo systemctl restart kiosk`.
 
+## Ctrl+Alt+Escape (local admin breakout) doesn't do anything
+
+- **Requires a keyboard physically attached to the device** — it's an
+  Openbox keybinding, not something reachable over the network.
+- Check the pidfile exists and matches a running watcher process:
+  ```bash
+  cat /run/live-signal-kiosk/watcher.pid
+  ps -p "$(cat /run/live-signal-kiosk/watcher.pid)"
+  ```
+  If missing, `kiosk.service`'s `RuntimeDirectory=live-signal-kiosk` isn't
+  taking effect (re-run `install.sh` to re-render the unit) or the watcher
+  crashed before writing it — check `journalctl -u kiosk -e`.
+- Confirm the keybinding actually got seeded: `cat ~kiosk/.config/openbox/rc.xml`
+  should contain a `<keybind key="C-A-Escape">` block pointing at
+  `scripts/toggle-admin-mode.sh`. This file is only written once (like
+  `config.env`) — if you moved the install directory, delete it and let
+  `xsession.sh` regenerate it on the next kiosk restart.
+- If the screen does swap but reboot/restart/Wi-Fi-connect buttons in the
+  admin panel fail: the sudoers grant may not have installed. Check for a
+  warning in `install.sh`'s output, and confirm
+  `/etc/sudoers.d/live-signal-kiosk` exists.
+
 ## Permissions issues with the kiosk user
 
 The `kiosk` system user needs membership in `video`, `render`, `input`, and

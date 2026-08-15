@@ -1,0 +1,6 @@
+# Grants the kiosk user passwordless sudo for exactly one script, which
+# itself validates its arguments (see scripts/system-helper.sh). Rendered
+# by install.sh with the real install path and kiosk username substituted
+# in, and validated with `visudo -c` before being installed to
+# /etc/sudoers.d/live-signal-kiosk.
+__KIOSK_USER__ ALL=(root) NOPASSWD: __APP_DIR__/scripts/system-helper.sh

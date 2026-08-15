@@ -84,8 +84,9 @@ edits persist across updates.
 | `KIOSK_USER`               | `kiosk`                                                | System user the kiosk session runs as. |
 | `LOG_LEVEL`                | `INFO`                                                 | Python logging level: `DEBUG`, `INFO`, `WARNING`, `ERROR`. |
 | `EDITOR_PORT`              | `8766`                                                 | Port the optional slide editor binds to on the LAN interface. |
-| `EDITOR_USERNAME`          | `admin`                                                | HTTP Basic Auth username for the slide editor. |
+| `EDITOR_USERNAME`          | `admin`                                                | HTTP Basic Auth username for the slide editor. Also used by the local admin breakout (see below). |
 | `EDITOR_PASSWORD`          | `changeme`                                             | HTTP Basic Auth password for the slide editor. **Change this before enabling the editor.** |
+| `LOCAL_ADMIN_PORT`         | `8767`                                                 | Port the local admin breakout binds to on `127.0.0.1` only (never the LAN) - see "Local admin breakout" below. |
 
 ## Editing slides
 
@@ -193,6 +194,70 @@ uploaded images go into `web/assets/`, so nothing about the waiting page
 changes — the editor is just a friendlier way to produce the same files you
 could otherwise edit by hand.
 
+### System panel
+
+The editor also has a **System** panel for the small set of device-level
+actions you'd otherwise need SSH for:
+
+- **Wi-Fi** — see current connection, scan for nearby networks, connect to
+  one (password prompted only for secured networks).
+- **Restart Kiosk Display** — restarts `kiosk.service` (briefly interrupts
+  the screen, same as `sudo systemctl restart kiosk`).
+- **Reboot Device** — reboots the whole machine.
+- **Clear Chromium Cache** — wipes the kiosk's and admin browser's Chromium
+  profile directories (cookies, cached pages, etc.) if either starts
+  behaving oddly.
+- **Clear Unused Images** — deletes any file under `web/assets/` that isn't
+  the logo or referenced by a current slide's `image` field, to keep old
+  uploads from accumulating.
+
+Reboot/restart/Wi-Fi-connect need root, which the editor process doesn't
+have (it runs as the unprivileged kiosk user, same as the watcher). Those
+three go through `scripts/system-helper.sh` via a narrow passwordless-sudo
+grant `install.sh` installs to `/etc/sudoers.d/live-signal-kiosk` — that
+script is the only thing sudo trusts, it validates its own arguments, and
+`install.sh` validates the generated sudoers file with `visudo -c` before
+installing it (never installs anything unvalidated). Cache/image cleanup
+needs no elevated privilege since the kiosk user already owns those files.
+
+## Local admin breakout
+
+For on-site setup — especially configuring Wi-Fi before the device has any
+working network connection — press **Ctrl+Alt+Escape** on a keyboard
+plugged directly into the device. This works even with no network at all,
+since it's a physical hotkey handled entirely by the watcher process
+running on the device, not a network request.
+
+What it does:
+
+1. Kills whatever's currently on screen (the waiting slides or a live
+   stream) and pauses the watcher's normal YouTube-checking/relaunch loop,
+   so nothing fights you for the display while you're using it.
+2. Starts a local-only instance of the same editor (same
+   `EDITOR_USERNAME`/`EDITOR_PASSWORD` login, same System panel) bound
+   strictly to `127.0.0.1:8767` — this is never reachable from the network,
+   regardless of any setting, and runs on a different port than the
+   LAN-facing `kiosk-editor.service` so both can coexist if that happens to
+   be running too.
+3. Opens a normal windowed (not fullscreen) Chromium pointed at that local
+   admin session, so you can use a mouse normally — the default `-nocursor`
+   the X server used to start with has been removed for exactly this reason
+   (it disabled the cursor at the X server level for everything, not just
+   the kiosk display).
+
+Press **Ctrl+Alt+Escape** again, or click **Return to Kiosk Display** in the
+admin page, to exit: it closes the admin browser, stops the local admin
+server, and returns to the waiting screen with a freshly-checked live
+status (never anything cached from before you entered admin mode).
+
+Under the hood: the hotkey (bound in Openbox's config, see
+`scripts/openbox-rc.xml`) just runs `scripts/toggle-admin-mode.sh`, a tiny
+script that sends `SIGUSR1` to the watcher process via its pidfile at
+`/run/live-signal-kiosk/watcher.pid`. The watcher's own signal handler does
+all the actual work — this keeps a single process in charge of what's on
+the display at all times, so there's no separate script racing the
+watcher's own crash-relaunch logic.
+
 ## Updating
 
 - **Software update** (pulls the latest code, updates `yt-dlp`, restarts the
@@ -236,10 +301,14 @@ live-signal-kiosk/
   scripts/
     start-kiosk.sh           # systemd ExecStart entrypoint
     xsession.sh               # X client script: screen-blanking off, Openbox, execs watcher.py
-    kiosk.service              # systemd unit template
-    kiosk-editor.service        # systemd unit template for the optional slide editor
-    setup-lite-kiosk.sh        # Raspberry Pi firmware/config.txt tweaks (Pi only, run by install.sh)
-    silent-boot.sh              # optional: hide most boot text (not run automatically)
+    openbox-rc.xml              # Openbox config template: admin-mode hotkey (Ctrl+Alt+Escape)
+    toggle-admin-mode.sh          # tiny script the hotkey runs: sends SIGUSR1 to the watcher
+    kiosk.service                  # systemd unit template
+    kiosk-editor.service             # systemd unit template for the optional slide editor
+    system-helper.sh                  # root-privileged helper for reboot/restart/Wi-Fi (see System panel)
+    system-helper.sudoers              # sudoers template granting NOPASSWD access to system-helper.sh
+    setup-lite-kiosk.sh                 # Raspberry Pi firmware/config.txt tweaks (Pi only, run by install.sh)
+    silent-boot.sh                       # optional: hide most boot text (not run automatically)
   docs/
     raspberry-pi-lite-setup.md
     troubleshooting.md
