@@ -193,14 +193,16 @@ systemctl daemon-reload
 systemctl enable kiosk.service
 systemctl enable kiosk-healthcheck.service
 
-# --- 5b. sudoers grant for system-helper.sh (reboot/restart/Wi-Fi) ----------
+# --- 5b. sudoers grants (reboot/restart/Wi-Fi, manual update check) --------
 #
-# Narrow, validated grant: the kiosk user may run exactly one script as
-# root with no password, and that script (scripts/system-helper.sh)
-# whitelists its own arguments. Validated with `visudo -c` before install
-# so a bad render can never corrupt sudo's config - if validation fails,
-# the file is NOT installed and those admin-panel actions just won't work
-# until it's fixed, rather than risking system sudo access.
+# Narrow, validated grants: the kiosk user may run exactly two commands as
+# root with no password - scripts/system-helper.sh (which whitelists its
+# own arguments) and one exact `systemctl start kiosk-autoupdate.service`
+# invocation for the editor's "Check for Updates" button. Validated with
+# `visudo -c` before install so a bad render can never corrupt sudo's
+# config - if validation fails, the file is NOT installed and those
+# admin-panel actions just won't work until it's fixed, rather than
+# risking system sudo access.
 SUDOERS_SRC="${APP_DIR}/scripts/system-helper.sudoers"
 SUDOERS_DEST="/etc/sudoers.d/live-signal-kiosk"
 SUDOERS_TMP="$(mktemp)"
@@ -215,7 +217,7 @@ if visudo -c -f "${SUDOERS_TMP}" >/dev/null 2>&1; then
   echo "install.sh: installed ${SUDOERS_DEST}"
 else
   echo "install.sh: WARNING - generated sudoers file failed validation, NOT installed." >&2
-  echo "install.sh: reboot/restart/Wi-Fi-connect actions in the admin panel will not work until this is fixed." >&2
+  echo "install.sh: reboot/restart/Wi-Fi-connect/check-for-updates actions in the admin panel will not work until this is fixed." >&2
 fi
 rm -f "${SUDOERS_TMP}"
 

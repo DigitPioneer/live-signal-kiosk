@@ -4,3 +4,12 @@
 # in, and validated with `visudo -c` before being installed to
 # /etc/sudoers.d/live-signal-kiosk.
 __KIOSK_USER__ ALL=(root) NOPASSWD: __APP_DIR__/scripts/system-helper.sh
+
+# Lets the editor's "Check for Updates" button trigger kiosk-autoupdate.service
+# immediately instead of waiting for kiosk-autoupdate.timer's next scheduled
+# run (see src/editor.py's /api/system/check-updates). Scoped to this exact
+# command line only - starting that one unit does not grant any broader
+# systemctl access, and the unit's own script (scripts/autoupdate.sh) still
+# enforces every safety check (maintenance window, AUTOUPDATE_ENABLED, sanity
+# checks) exactly as it does when the timer fires it.
+__KIOSK_USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl start kiosk-autoupdate.service

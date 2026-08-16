@@ -320,6 +320,23 @@ safety rails, since this runs on a device nobody's actively watching:
    itself doesn't come up cleanly either, the device stops trying and
    waits for a human — it will not reboot-loop.
 
+**Checking for updates on demand.** The editor's System panel has a
+**Check for Updates** button that triggers an immediate check instead of
+waiting for `kiosk-autoupdate.timer`'s next scheduled run — useful right
+after pushing a fix you want applied now rather than within the hour. It
+runs the exact same `kiosk-autoupdate.service` unit the timer uses, so
+**every safety rule above still applies exactly as written**: it still
+does nothing outside the maintenance window, still requires
+`AUTOUPDATE_ENABLED=true`, still runs the same sanity checks, and still
+won't stack a second update attempt on top of one still awaiting post-boot
+verification. Clicking it outside the maintenance window is not a bug —
+if a new commit exists, it'll be picked up and applied at the next window
+instead of immediately. The panel also shows the current commit, the
+last-known-good commit, and a plain-language status
+(up to date / update pending verification after reboot / recovering from
+a failed update), all read directly from files on disk — no `git` calls
+happen from the editor process.
+
 **Off by default.** This device can be showing a live church service, and
 an unattended reboot — even with the safety rails above — is a real risk
 worth opting into deliberately rather than something that starts happening

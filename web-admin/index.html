@@ -293,6 +293,21 @@
     <h2>System</h2>
 
     <div>
+      <strong>Updates:</strong> <span id="update-status">checking...</span>
+      <div class="hint" id="update-commit-info"></div>
+      <div class="system-actions">
+        <button id="check-updates-btn" class="secondary">Check for Updates</button>
+      </div>
+      <p class="hint">
+        Checks now instead of waiting for the next scheduled check. Still
+        only applies an update during the configured maintenance window -
+        this is a safety rule, not a bug.
+      </p>
+    </div>
+
+    <hr style="border-color: var(--panel-border); margin: 14px 0;">
+
+    <div>
       <strong>Wi-Fi:</strong> <span id="wifi-current">checking...</span>
       <div class="system-actions">
         <button id="wifi-scan-btn" class="secondary">Scan for Networks</button>
@@ -359,6 +374,8 @@
       var adminModeBanner = document.getElementById("admin-mode-banner");
       var wifiCurrentEl = document.getElementById("wifi-current");
       var wifiNetworkListEl = document.getElementById("wifi-network-list");
+      var updateStatusEl = document.getElementById("update-status");
+      var updateCommitInfoEl = document.getElementById("update-commit-info");
 
       var LOGO_MAX_HEIGHT_MIN = 4;
       var LOGO_MAX_HEIGHT_MAX = 35;
@@ -799,6 +816,31 @@
 
       // -- system actions ---------------------------------------------------
 
+      var UPDATE_STATUS_LABELS = {
+        up_to_date: "Up to date",
+        update_pending_verification: "Update installed - verifying it after reboot",
+        rollback_in_progress: "Recovering from a failed update",
+      };
+
+      function shortCommit(hash) {
+        return hash ? hash.slice(0, 8) : "unknown";
+      }
+
+      function loadUpdateStatus() {
+        updateStatusEl.textContent = "checking...";
+        apiFetch("/api/system/update-status")
+          .then(function (data) {
+            updateStatusEl.textContent = UPDATE_STATUS_LABELS[data.status] || data.status;
+            updateCommitInfoEl.textContent =
+              "Current: " + shortCommit(data.current_commit) +
+              " - Last known good: " + shortCommit(data.last_known_good_commit);
+          })
+          .catch(function (err) {
+            updateStatusEl.textContent = "unknown (" + err.message + ")";
+            updateCommitInfoEl.textContent = "";
+          });
+      }
+
       function loadWifiStatus() {
         wifiCurrentEl.textContent = "checking...";
         apiFetch("/api/system/wifi/status")
@@ -864,6 +906,16 @@
         });
       }
 
+      document.getElementById("check-updates-btn").onclick = function () {
+        apiFetch("/api/system/check-updates", { method: "POST" })
+          .then(function () {
+            showStatus("Check started - refresh in a minute to see the result.", false);
+          })
+          .catch(function (err) {
+            showStatus("Failed to start update check: " + err.message, true);
+          });
+      };
+
       document.getElementById("wifi-scan-btn").onclick = function () {
         wifiNetworkListEl.innerHTML = "<div class=\"hint\">Scanning...</div>";
         apiFetch("/api/system/wifi/scan")
@@ -926,6 +978,7 @@
       loadSlides();
       loadMode();
       loadWifiStatus();
+      loadUpdateStatus();
     })();
   </script>
 </body>

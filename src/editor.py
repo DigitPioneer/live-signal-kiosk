@@ -53,6 +53,13 @@ LOG_FILE = os.path.join(LOG_DIR, "editor.log")
 RUN_DIR = "/run/live-signal-kiosk"
 EXIT_ADMIN_SENTINEL_PATH = os.path.join(RUN_DIR, "exit-admin-requested")
 
+# Auto-update state (see scripts/autoupdate.sh and scripts/healthcheck.sh,
+# which are the only things that ever write these).
+LKG_FILE = "/etc/live-signal-kiosk/last-known-good-commit"
+PENDING_MARKER = "/etc/live-signal-kiosk/pending-update-verification"
+ROLLBACK_MARKER = "/etc/live-signal-kiosk/rollback-attempted"
+GIT_DIR = os.path.join(APP_DIR, ".git")
+
 # Chromium profile dirs created by watcher.py - cleared by the "clear
 # Chromium cache" system action. Kept in sync with watcher.py's own
 # CHROMIUM_PROFILE_DIR / ADMIN_CHROMIUM_PROFILE_DIR paths.
@@ -479,6 +486,104 @@ def parse_nmcli_terse_line(line):
 
 
 # ---------------------------------------------------------------------------
+# Auto-update status (deliberately no `git` subprocess calls - see
+# GIT_DIR/resolve_git_head_commit below)
+# ---------------------------------------------------------------------------
+
+
+def resolve_git_head_commit():
+    """Reads the current commit hash directly from .git/HEAD and the ref
+    it points to, without shelling out to `git` (avoids `git`'s "detected
+    dubious ownership" prompt when the process's user doesn't own the
+    working tree, and avoids needing a git binary/config at all here).
+    This repo only ever has one branch checked out - no detached-HEAD or
+    multiple-worktree handling needed. Returns None if anything about the
+    repo layout looks unexpected, rather than raising."""
+    try:
+        with open(os.path.join(GIT_DIR, "HEAD"), "r", encoding="utf-8") as f:
+            head_content = f.read().strip()
+    except OSError:
+        return None
+
+    if not head_content.startswith("ref:"):
+        # Detached HEAD: HEAD itself holds the commit hash directly. Not
+        # expected in normal operation, but handled rather than crashing.
+        return head_content or None
+
+    ref_path = head_content[len("ref:"):].strip()
+    if not ref_path or ".." in ref_path.split("/"):
+        return None
+
+    loose_ref_path = os.path.join(GIT_DIR, *ref_path.split("/"))
+    try:
+        with open(loose_ref_path, "r", encoding="utf-8") as f:
+            commit = f.read().strip()
+            if commit:
+                return commit
+    except OSError:
+        pass
+
+    # Fallback for a ref that's been packed (e.g. after `git gc`) rather
+    # than existing as its own loose file under .git/refs/.
+    try:
+        with open(os.path.join(GIT_DIR, "packed-refs"), "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line[0] in ("#", "^"):
+                    continue
+                parts = line.split(" ", 1)
+                if len(parts) == 2 and parts[1] == ref_path:
+                    return parts[0]
+    except OSError:
+        pass
+
+    return None
+
+
+def read_marker_file(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read().strip()
+            return content or None
+    except OSError:
+        return None
+
+
+def get_update_status():
+    """Derives a status string purely from marker-file presence - see
+    scripts/healthcheck.sh's own comments for what each marker means.
+    pending-update-verification and rollback-attempted are never both
+    present in steady state, but pending takes priority if they somehow
+    are (it reflects the more recent event)."""
+    if os.path.isfile(PENDING_MARKER):
+        return "update_pending_verification"
+    if os.path.isfile(ROLLBACK_MARKER):
+        return "rollback_in_progress"
+    return "up_to_date"
+
+
+def start_autoupdate_check():
+    """Triggers kiosk-autoupdate.service immediately via the dedicated
+    sudoers grant for exactly this command line (see
+    scripts/system-helper.sudoers) - deliberately NOT routed through
+    system-helper.sh, since the grant is scoped to this systemctl
+    invocation specifically. `systemctl start` on a oneshot unit blocks
+    until the unit's ExecStart exits, which for kiosk-autoupdate.service
+    can mean the full update+install.sh cycle (or end in a reboot) - so
+    this always runs in a background thread; callers must not block the
+    HTTP response on it."""
+    try:
+        subprocess.run(
+            ["sudo", "-n", "/usr/bin/systemctl", "start", "kiosk-autoupdate.service"],
+            timeout=600,
+            capture_output=True,
+            text=True,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        log.warning("Manual auto-update trigger did not complete cleanly: %s", exc)
+
+
+# ---------------------------------------------------------------------------
 # HTTP handler
 # ---------------------------------------------------------------------------
 
@@ -583,6 +688,8 @@ class EditorRequestHandler(http.server.BaseHTTPRequestHandler):
                 self._handle_wifi_status()
             elif path == "/api/system/wifi/scan":
                 self._handle_wifi_scan()
+            elif path == "/api/system/update-status":
+                self._handle_update_status()
             elif path.startswith("/assets/"):
                 self._serve_asset(path[len("/assets/"):])
             else:
@@ -615,6 +722,8 @@ class EditorRequestHandler(http.server.BaseHTTPRequestHandler):
                 self._handle_clear_chromium_cache()
             elif path == "/api/system/clear-unused-images":
                 self._handle_clear_unused_images()
+            elif path == "/api/system/check-updates":
+                self._handle_check_updates()
             elif path == "/api/local-admin/exit":
                 self._handle_local_admin_exit()
             else:
@@ -864,6 +973,22 @@ class EditorRequestHandler(http.server.BaseHTTPRequestHandler):
 
         log.info("Unused images cleared by %s: %s", self.address_string(), removed)
         self._send_json({"ok": True, "removed": removed})
+
+    def _handle_update_status(self):
+        self._send_json(
+            {
+                "current_commit": resolve_git_head_commit(),
+                "last_known_good_commit": read_marker_file(LKG_FILE),
+                "status": get_update_status(),
+            }
+        )
+
+    def _handle_check_updates(self):
+        log.info("Manual update check requested by %s", self.address_string())
+        # Runs the (potentially long, potentially reboot-ending) systemctl
+        # call in the background - this response must not wait on it.
+        threading.Thread(target=start_autoupdate_check, daemon=True).start()
+        self._send_json({"ok": True, "message": "Check started"}, status=202)
 
 
 def start_editor_server(port, bind_host="0.0.0.0", local_admin=False):
