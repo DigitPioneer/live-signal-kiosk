@@ -413,4 +413,3 @@ live-signal-kiosk/
 ## Troubleshooting
 
 See [docs/troubleshooting.md](docs/troubleshooting.md).
-Test 2
