@@ -87,12 +87,32 @@ edits persist across updates.
 | `EDITOR_USERNAME`          | `admin`                                                | HTTP Basic Auth username for the slide editor. Also used by the local admin breakout (see below). |
 | `EDITOR_PASSWORD`          | `changeme`                                             | HTTP Basic Auth password for the slide editor. **Change this before enabling the editor.** |
 | `LOCAL_ADMIN_PORT`         | `8767`                                                 | Port the local admin breakout binds to on `127.0.0.1` only (never the LAN) - see "Local admin breakout" below. |
+| `AUTOUPDATE_ENABLED`       | `false`                                                | Turns unattended auto-update on/off. **Off by default** - see "Auto-update" below before enabling. |
+| `AUTOUPDATE_CHECK_INTERVAL_MINUTES` | `60`                                          | How often `kiosk-autoupdate.timer` checks for new commits. Baked into the timer at install time. |
+| `AUTOUPDATE_WINDOW_START`  | `2`                                                    | Maintenance window start hour (0-23, local time). Updates/reboots only happen inside the window. |
+| `AUTOUPDATE_WINDOW_END`    | `4`                                                    | Maintenance window end hour (0-23, local time). `START > END` wraps midnight. |
 
 ## Editing slides
 
-Slides live in [web/slides.json](web/slides.json) and are picked up
+Slides live in `web/slides.json` on the device and are picked up
 automatically (the waiting page re-fetches them periodically — no restart
-needed, though a hard refresh forces it immediately). Schema:
+needed, though a hard refresh forces it immediately).
+
+**Not tracked in git, by design.** `web/slides.json` and everything under
+`web/assets/` (the logo, uploaded slide images) are excluded from version
+control (see `.gitignore`) because they're live content, edited on disk
+through the slide editor — not something meant to go through commits and
+pull requests. This also means [Auto-update](#auto-update)'s rollback
+(`git reset --hard`) can never discard a slide edit or a re-uploaded logo
+along with reverting broken code: it only ever touches tracked code, never
+these files. `install.sh` seeds both from the tracked templates,
+[web/slides.example.json](web/slides.example.json) and
+[web/assets/src-logo.example.png](web/assets/src-logo.example.png), the
+first time it runs — same never-overwrite-an-existing-install pattern as
+`config.env` — so a fresh clone still comes up with sensible defaults even
+though the live files themselves aren't in the repository.
+
+Schema:
 
 ```json
 {
@@ -143,12 +163,13 @@ layout — existing slides with no `full_image` field are unaffected.
 }
 ```
 
-The church logo at [web/assets/src-logo.png](web/assets/src-logo.png) ships
-as a placeholder. Replace it with your church's real logo — **keep the same
-filename** so `waiting.html` doesn't need editing. Replacing the logo or any
-slide image (by hand or through the editor) shows up on the waiting screen
-on its own within the next periodic slide refresh — no `systemctl restart
-kiosk` needed.
+The church logo at `web/assets/src-logo.png` starts out as a placeholder
+(seeded from [web/assets/src-logo.example.png](web/assets/src-logo.example.png)
+on install — see above). Replace it with your church's real logo —
+**keep the same filename** so `waiting.html` doesn't need editing.
+Replacing the logo or any slide image (by hand or through the editor)
+shows up on the waiting screen on its own within the next periodic slide
+refresh — no `systemctl restart kiosk` needed.
 
 You can also edit slides through the browser-based slide editor (see below)
 instead of hand-editing the JSON, including toggling a slide between the
@@ -268,6 +289,74 @@ watcher's own crash-relaunch logic.
 - **Slide content update:** just edit `web/slides.json` and save. The waiting
   page re-fetches it on its own; no restart required.
 
+## Auto-update
+
+An optional unattended alternative to running `update.sh` by hand:
+`kiosk-autoupdate.timer` periodically checks the git repo for new commits
+and, if it finds one, updates and reboots on its own — but only with real
+safety rails, since this runs on a device nobody's actively watching:
+
+1. **Maintenance window.** Nothing happens outside
+   `AUTOUPDATE_WINDOW_START`–`AUTOUPDATE_WINDOW_END` (local time, default
+   2 AM–4 AM). A church kiosk must not go dark mid-service because a
+   commit happened to land at a bad time.
+2. **Sanity checks before ever rebooting.** After pulling, it runs
+   `python3 -m py_compile` on every `.py` file, `bash -n` on every `.sh`
+   file, and validates `web/slides.json` if it changed. Any failure resets
+   the working tree back to the commit it was on before the pull and stops
+   — the device keeps running its current, still-working code. No reboot.
+3. **Automatic rollback for the failures sanity checks can't catch.** Code
+   that's syntactically fine but still broken at runtime (the exact
+   `WantedBy=graphical.target` class of bug noted in
+   [docs/troubleshooting.md](docs/troubleshooting.md) — passes every static
+   check, only fails on an actual boot) is caught differently: right
+   before rebooting into an update, the pre-update commit is recorded as
+   `/etc/live-signal-kiosk/last-known-good-commit`. On the next boot,
+   `kiosk-healthcheck.service` waits up to 90 seconds for `kiosk.service`
+   to actually become active. If it does, that commit becomes the new
+   known-good baseline. If it doesn't, the device automatically rolls back
+   to the last known-good commit and reboots once more to verify *that*.
+4. **Rollback is capped at exactly one attempt.** If the rollback target
+   itself doesn't come up cleanly either, the device stops trying and
+   waits for a human — it will not reboot-loop.
+
+**Off by default.** This device can be showing a live church service, and
+an unattended reboot — even with the safety rails above — is a real risk
+worth opting into deliberately rather than something that starts happening
+silently after a routine `install.sh` run. Turn it on with:
+
+```bash
+sudo nano /etc/live-signal-kiosk/config.env   # set AUTOUPDATE_ENABLED=true
+sudo /opt/live-signal-kiosk/install.sh
+```
+
+Re-running `install.sh` is also how you change
+`AUTOUPDATE_CHECK_INTERVAL_MINUTES` or turn it back off
+(`AUTOUPDATE_ENABLED=false` + re-run) — the timer's schedule is baked into
+the systemd unit at install time, since timers can't read `config.env` at
+runtime.
+
+**Manual rollback**, if you ever need to do it yourself instead of waiting
+on the automatic recovery (or after the one-attempt cap has been hit):
+
+```bash
+cat /etc/live-signal-kiosk/last-known-good-commit   # the commit to roll back to
+cd /opt/live-signal-kiosk
+sudo git reset --hard <commit>
+sudo ./install.sh
+sudo reboot
+```
+
+**Rollback only ever touches code, never slide content.** `web/slides.json`
+and everything under `web/assets/` (logo, uploaded slide images) are
+deliberately excluded from version control — see
+[Editing slides](#editing-slides) — specifically so that both `git pull`
+and, more importantly, `git reset --hard` during a rollback are scoped to
+tracked application code only. Auto-update and its rollback path can never
+discard a slide edit or a re-uploaded logo, however many update or
+rollback cycles run in between. There's nothing to configure for this —
+it's just how the files are tracked.
+
 ## Day-to-day service management
 
 ```bash
@@ -293,9 +382,11 @@ live-signal-kiosk/
     envfile.py               # shared KEY=VALUE config parser used by both
   web/
     waiting.html           # self-contained waiting/slides page
-    slides.json             # editable announcement slides
+    slides.example.json     # tracked template - install.sh seeds slides.json from this on first install
+    slides.json              # NOT tracked in git (see .gitignore) - live announcement slides, edited on disk
     assets/
-      src-logo.png          # placeholder church logo — replace with the real one
+      src-logo.example.png   # tracked template - install.sh seeds src-logo.png from this on first install
+      src-logo.png            # NOT tracked in git - the live logo (and any uploaded slide images land here too)
   web-admin/
     index.html              # slide editor UI (served by editor.py, not by the kiosk's own server)
   scripts/
@@ -307,8 +398,13 @@ live-signal-kiosk/
     kiosk-editor.service             # systemd unit template for the optional slide editor
     system-helper.sh                  # root-privileged helper for reboot/restart/Wi-Fi (see System panel)
     system-helper.sudoers              # sudoers template granting NOPASSWD access to system-helper.sh
-    setup-lite-kiosk.sh                 # Raspberry Pi firmware/config.txt tweaks (Pi only, run by install.sh)
-    silent-boot.sh                       # optional: hide most boot text (not run automatically)
+    autoupdate.sh                       # unattended check-and-update, run by kiosk-autoupdate.timer
+    healthcheck.sh                       # post-update boot verification/rollback, run by kiosk-healthcheck.service
+    kiosk-autoupdate.service              # systemd unit template: runs autoupdate.sh (triggered by the timer)
+    kiosk-autoupdate.timer                 # systemd timer template: how often autoupdate.sh runs
+    kiosk-healthcheck.service               # systemd unit template: runs healthcheck.sh once per boot
+    setup-lite-kiosk.sh                       # Raspberry Pi firmware/config.txt tweaks (Pi only, run by install.sh)
+    silent-boot.sh                             # optional: hide most boot text (not run automatically)
   docs/
     raspberry-pi-lite-setup.md
     troubleshooting.md

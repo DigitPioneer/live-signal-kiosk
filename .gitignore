@@ -7,3 +7,14 @@ __pycache__/
 *.log
 .cache/
 chromium-profile/
+
+# Live slide content and uploaded images - edited on disk through the slide
+# editor (src/editor.py), not through git. Excluded so autoupdate.sh's
+# rollback (`git reset --hard`) can never discard someone's slide edits
+# along with reverting broken code; it only ever touches tracked code.
+# install.sh seeds these from web/slides.example.json and
+# web/assets/src-logo.example.png (both still tracked) on a fresh install,
+# exactly once, same pattern as config.example.env -> config.env.
+web/slides.json
+web/assets/*
+!web/assets/*.example.png

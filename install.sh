@@ -96,6 +96,39 @@ else
   echo "install.sh: installed default config to ${CONFIG_FILE}"
 fi
 
+# --- 4b. Default slide content (never overwrite an existing install) -------
+#
+# web/slides.json and web/assets/* are edited live through the slide editor
+# and are deliberately NOT tracked in git (see .gitignore) - so
+# autoupdate.sh's rollback (`git reset --hard`) can never discard someone's
+# slide edits along with reverting broken code, it only ever touches
+# tracked code. That also means a fresh git clone no longer ships these
+# files at all - seed sensible defaults here, exactly once, same
+# never-overwrite pattern as config.env above. Owned by KIOSK_USER (not
+# whoever ran `git clone`, which is typically a different, non-kiosk user)
+# so the editor - which runs as KIOSK_USER - can actually write to them.
+
+SLIDES_FILE="${APP_DIR}/web/slides.json"
+if [[ -f "${SLIDES_FILE}" ]]; then
+  echo "install.sh: ${SLIDES_FILE} already exists, leaving it untouched"
+else
+  cp "${APP_DIR}/web/slides.example.json" "${SLIDES_FILE}"
+  echo "install.sh: seeded default slide content at ${SLIDES_FILE}"
+fi
+
+ASSETS_DIR="${APP_DIR}/web/assets"
+mkdir -p "${ASSETS_DIR}"
+LOGO_FILE="${ASSETS_DIR}/src-logo.png"
+if [[ -f "${LOGO_FILE}" ]]; then
+  echo "install.sh: ${LOGO_FILE} already exists, leaving it untouched"
+else
+  cp "${APP_DIR}/web/assets/src-logo.example.png" "${LOGO_FILE}"
+  echo "install.sh: seeded placeholder logo at ${LOGO_FILE}"
+fi
+
+chown "${KIOSK_USER}:${KIOSK_USER}" "${SLIDES_FILE}"
+chown -R "${KIOSK_USER}:${KIOSK_USER}" "${ASSETS_DIR}"
+
 # --- 5. systemd units -----------------------------------------------------
 
 SERVICE_SRC="${APP_DIR}/scripts/kiosk.service"
@@ -121,6 +154,28 @@ sed \
 
 echo "install.sh: installed ${EDITOR_SERVICE_DEST} (not enabled - see summary below)"
 
+# kiosk-healthcheck.service verifies a post-auto-update boot and rolls
+# back if needed - it's a no-op on every ordinary boot (see its
+# ConditionPathExists guard), so it's always installed and enabled
+# regardless of whether auto-update itself is turned on.
+HEALTHCHECK_SERVICE_SRC="${APP_DIR}/scripts/kiosk-healthcheck.service"
+HEALTHCHECK_SERVICE_DEST="/etc/systemd/system/kiosk-healthcheck.service"
+
+sed \
+  -e "s#__APP_DIR__#${APP_DIR}#g" \
+  "${HEALTHCHECK_SERVICE_SRC}" > "${HEALTHCHECK_SERVICE_DEST}"
+
+echo "install.sh: installed ${HEALTHCHECK_SERVICE_DEST}"
+
+AUTOUPDATE_SERVICE_SRC="${APP_DIR}/scripts/kiosk-autoupdate.service"
+AUTOUPDATE_SERVICE_DEST="/etc/systemd/system/kiosk-autoupdate.service"
+
+sed \
+  -e "s#__APP_DIR__#${APP_DIR}#g" \
+  "${AUTOUPDATE_SERVICE_SRC}" > "${AUTOUPDATE_SERVICE_DEST}"
+
+echo "install.sh: installed ${AUTOUPDATE_SERVICE_DEST}"
+
 chmod +x \
   "${APP_DIR}/scripts/start-kiosk.sh" \
   "${APP_DIR}/scripts/xsession.sh" \
@@ -128,12 +183,15 @@ chmod +x \
   "${APP_DIR}/scripts/silent-boot.sh" \
   "${APP_DIR}/scripts/system-helper.sh" \
   "${APP_DIR}/scripts/toggle-admin-mode.sh" \
+  "${APP_DIR}/scripts/autoupdate.sh" \
+  "${APP_DIR}/scripts/healthcheck.sh" \
   "${APP_DIR}/src/editor.py" \
   "${APP_DIR}/install.sh" \
   "${APP_DIR}/update.sh"
 
 systemctl daemon-reload
 systemctl enable kiosk.service
+systemctl enable kiosk-healthcheck.service
 
 # --- 5b. sudoers grant for system-helper.sh (reboot/restart/Wi-Fi) ----------
 #
@@ -160,6 +218,40 @@ else
   echo "install.sh: reboot/restart/Wi-Fi-connect actions in the admin panel will not work until this is fixed." >&2
 fi
 rm -f "${SUDOERS_TMP}"
+
+# --- 5c. Auto-update timer (interval baked in from config.env) --------------
+#
+# systemd timers can't read config.env at runtime, so the check interval is
+# rendered into the unit at install time - re-run install.sh after changing
+# AUTOUPDATE_CHECK_INTERVAL_MINUTES to apply a new value. Read in a subshell
+# so config.env's other values (KIOSK_USER, passwords, ...) never leak into
+# this script's own environment.
+AUTOUPDATE_CHECK_INTERVAL_MINUTES="$(. "${CONFIG_FILE}"; echo "${AUTOUPDATE_CHECK_INTERVAL_MINUTES:-60}")"
+
+AUTOUPDATE_TIMER_SRC="${APP_DIR}/scripts/kiosk-autoupdate.timer"
+AUTOUPDATE_TIMER_DEST="/etc/systemd/system/kiosk-autoupdate.timer"
+
+sed \
+  -e "s#__AUTOUPDATE_CHECK_INTERVAL_MINUTES__#${AUTOUPDATE_CHECK_INTERVAL_MINUTES}#g" \
+  "${AUTOUPDATE_TIMER_SRC}" > "${AUTOUPDATE_TIMER_DEST}"
+
+echo "install.sh: installed ${AUTOUPDATE_TIMER_DEST} (check interval: ${AUTOUPDATE_CHECK_INTERVAL_MINUTES}m)"
+
+systemctl daemon-reload
+
+# Only enabled if AUTOUPDATE_ENABLED=true in config.env at install time -
+# flip that value and re-run install.sh to turn auto-update on or off; no
+# manual systemctl enable/disable needed.
+AUTOUPDATE_ENABLED_VALUE="$(. "${CONFIG_FILE}"; echo "${AUTOUPDATE_ENABLED:-false}")"
+AUTOUPDATE_WINDOW_START_VALUE="$(. "${CONFIG_FILE}"; echo "${AUTOUPDATE_WINDOW_START:-2}")"
+AUTOUPDATE_WINDOW_END_VALUE="$(. "${CONFIG_FILE}"; echo "${AUTOUPDATE_WINDOW_END:-4}")"
+if [[ "${AUTOUPDATE_ENABLED_VALUE}" == "true" ]]; then
+  systemctl enable --now kiosk-autoupdate.timer
+  echo "install.sh: kiosk-autoupdate.timer ENABLED (AUTOUPDATE_ENABLED=true in ${CONFIG_FILE})"
+else
+  systemctl disable --now kiosk-autoupdate.timer >/dev/null 2>&1 || true
+  echo "install.sh: kiosk-autoupdate.timer not enabled (AUTOUPDATE_ENABLED=${AUTOUPDATE_ENABLED_VALUE} in ${CONFIG_FILE})"
+fi
 
 # --- 6. Log directory ---------------------------------------------------------
 
@@ -218,4 +310,10 @@ With a keyboard plugged directly into this device, press Ctrl+Alt+Escape to
 break out to a local admin session (same login as above) even with no
 network - useful for fixing Wi-Fi on first setup. Press it again, or use the
 "Return to Kiosk Display" button, to go back. See README.md for details.
+
+Auto-update: kiosk-autoupdate.timer is $( [[ "${AUTOUPDATE_ENABLED_VALUE}" == "true" ]] && echo "ENABLED (checking every ${AUTOUPDATE_CHECK_INTERVAL_MINUTES}m, window ${AUTOUPDATE_WINDOW_START_VALUE}:00-${AUTOUPDATE_WINDOW_END_VALUE}:00)" || echo "off" ).
+To turn it on/off, edit AUTOUPDATE_ENABLED in ${CONFIG_FILE} and re-run
+install.sh. See README.md's "Auto-update" section before enabling this -
+it reboots the device unattended, inside a configured maintenance window,
+with automatic rollback if the update doesn't come up cleanly.
 EOF

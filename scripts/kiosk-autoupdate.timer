@@ -1,0 +1,14 @@
+[Unit]
+Description=Periodic timer for LiveSignal Kiosk auto-update check
+
+[Timer]
+# Give the system a few minutes after boot before the first check.
+OnBootSec=5min
+# Baked in at install time from AUTOUPDATE_CHECK_INTERVAL_MINUTES in
+# config.env - systemd timers can't read that file at runtime. Change the
+# value and re-run install.sh to apply a new interval.
+OnUnitActiveSec=__AUTOUPDATE_CHECK_INTERVAL_MINUTES__min
+Unit=kiosk-autoupdate.service
+
+[Install]
+WantedBy=timers.target

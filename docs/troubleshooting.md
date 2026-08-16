@@ -144,6 +144,49 @@ periodically on its own. If you don't see your edit:
   warning in `install.sh`'s output, and confirm
   `/etc/sudoers.d/live-signal-kiosk` exists.
 
+## Device seems stuck, behind, or recently rebooted unexpectedly (auto-update)
+
+If `AUTOUPDATE_ENABLED=true`, check for these marker files under
+`/etc/live-signal-kiosk/` — their presence tells you exactly where an
+auto-update cycle is:
+
+- **`pending-update-verification` exists, `rollback-attempted` doesn't:**
+  the device just rebooted into a freshly-pulled update and
+  `kiosk-healthcheck.service` hasn't resolved it yet (normally takes under
+  90 seconds after `kiosk.service` starts). If this persists for several
+  minutes, `kiosk-healthcheck.service` may not have run — check
+  `systemctl status kiosk-healthcheck.service` and
+  `journalctl -u kiosk-healthcheck -e`.
+- **`rollback-attempted` exists:** an update failed to come up, and the
+  device has already rolled back to `last-known-good-commit` and rebooted
+  to verify that. This should resolve itself (both files get cleaned up)
+  within about 90 seconds of that reboot. If both files are still present
+  well after that, the rollback verification itself may not have
+  completed — check the same service/journal commands above.
+- **Neither file exists, but the device seems to be running old code:**
+  auto-update may have found nothing to update (already up to date),
+  be outside its maintenance window, or a `git fetch`/`pull` may have
+  failed (e.g. no network access at check time). Check
+  `journalctl -u kiosk-autoupdate -e` for the most recent cycle's log —
+  it always logs a reason when it doesn't update, except for the
+  "outside maintenance window" and "disabled" cases, which are silent by
+  design (they fire on every timer tick and would otherwise spam the log).
+- **The device rebooted once and is now on old code, with neither marker
+  present:** this is the terminal "manual intervention required" state -
+  automatic rollback is capped at exactly one attempt, and if that
+  rollback itself didn't bring the kiosk up, `kiosk-healthcheck.service`
+  logs a clear warning (`journalctl -u kiosk-healthcheck -e`) and cleans up
+  both markers rather than rebooting again. See "Manual rollback" in
+  README.md's Auto-update section.
+
+To see exactly what auto-update decided on its last run:
+
+```bash
+journalctl -u kiosk-autoupdate -e
+journalctl -u kiosk-healthcheck -e
+cat /etc/live-signal-kiosk/last-known-good-commit
+```
+
 ## Permissions issues with the kiosk user
 
 The `kiosk` system user needs membership in `video`, `render`, `input`, and

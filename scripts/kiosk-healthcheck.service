@@ -1,0 +1,23 @@
+[Unit]
+Description=LiveSignal Kiosk post-update boot verification/rollback
+After=kiosk.service
+# Deliberately NOT Before=/required-by kiosk.service - this runs alongside
+# the kiosk starting up, never blocking or delaying it.
+#
+# ConditionPathExists lines are OR'd by systemd: this unit (including the
+# ExecStartPre sleep below) is skipped entirely unless one of these marker
+# files is present - i.e. on every ordinary boot. Only a boot that follows
+# an auto-update attempt (see scripts/autoupdate.sh) actually runs this.
+ConditionPathExists=/etc/live-signal-kiosk/pending-update-verification
+ConditionPathExists=/etc/live-signal-kiosk/rollback-attempted
+
+[Service]
+Type=oneshot
+# Gives kiosk.service a little time to actually reach "active" before
+# healthcheck.sh starts polling it (which then itself polls for up to
+# another 90s - see scripts/healthcheck.sh).
+ExecStartPre=/bin/sleep 60
+ExecStart=__APP_DIR__/scripts/healthcheck.sh
+
+[Install]
+WantedBy=multi-user.target

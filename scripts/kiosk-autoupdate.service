@@ -1,0 +1,8 @@
+[Unit]
+Description=LiveSignal Kiosk auto-update check
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=__APP_DIR__/scripts/autoupdate.sh
