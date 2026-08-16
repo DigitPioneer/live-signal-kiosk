@@ -187,6 +187,55 @@ journalctl -u kiosk-healthcheck -e
 cat /etc/live-signal-kiosk/last-known-good-commit
 ```
 
+### `kiosk-healthcheck.service` never runs at all — a note on `Condition*=` syntax
+
+This unit's whole job depends on `scripts/kiosk-healthcheck.service`'s two
+`ConditionPathExists=` lines correctly gating it to run only when
+`pending-update-verification` OR `rollback-attempted` exists. Getting the
+syntax for that "OR" wrong is easy and produces no error, no warning, and
+no obvious symptom until an update actually needs the rollback path —
+which is exactly why this is worth a permanent, explicit note rather than
+trusting memory of systemd's syntax next time this file is touched:
+
+- **Bare repeated `ConditionPathExists=` lines are AND'd, not OR'd.**
+  Requiring both marker files to exist simultaneously is a condition the
+  design's own state machine never produces (they're mutually exclusive),
+  so the unit would silently never run — the auto-update rollback path
+  would be completely dead on real hardware despite every other part of
+  the system working and every direct test of `healthcheck.sh` itself
+  passing (those tests invoke the script directly and never exercise
+  systemd's own gating at all).
+- **The fix is a pipe placed immediately after the `=`**, as part of the
+  *value* — `ConditionPathExists=|/path` — making that entry a
+  "triggering condition" (per `systemd.unit(5)`: the unit runs if at least
+  one triggering condition applies, and all non-triggering ones do).
+- **A pipe placed before the directive name instead**
+  (`|ConditionPathExists=/path`) is a *different* mistake, not a
+  workaround for the first one: systemd unit files are INI-style, so that
+  makes the key name itself `|ConditionPathExists`, which isn't a
+  recognized directive. systemd drops the line silently, the unit ends up
+  with *no* conditions at all, and it runs unconditionally on every single
+  boot instead of only the intended ones.
+- This was verified directly against systemd's own parser source
+  (`config_parse_unit_condition_path` in `src/core/load-fragment.c`,
+  upstream `systemd/systemd` on GitHub — the exact line is
+  `trigger = rvalue[0] == '|'`, where `rvalue` is unambiguously the value
+  after `=`, not the key), not just against man-page prose, since two
+  different pieces of prose (an older Debian "stretch" manpage and current
+  systemd.unit(5)) describe the placement ambiguously enough that they
+  could be misread either way. Cross-checked against the current
+  `systemd.unit(5)` text on the Debian "testing" manpages, which states it
+  unambiguously: *"Condition checks can use a pipe symbol ('|') after the
+  equals sign ('Condition...=|...')."*
+- **If you ever suspect this again:** the most reliable real-hardware
+  check is `systemd-analyze verify scripts/kiosk-healthcheck.service` (or
+  after install, `systemd-analyze verify kiosk-healthcheck.service`) plus
+  `systemctl show kiosk-healthcheck.service -p ConditionResult` after
+  touching one of the marker files by hand — this environment had no
+  systemd available to run either of those directly, so the fix here was
+  verified against the parser source and documentation instead. Don't
+  skip an actual boot test on real hardware before trusting this further.
+
 ## Permissions issues with the kiosk user
 
 The `kiosk` system user needs membership in `video`, `render`, `input`, and

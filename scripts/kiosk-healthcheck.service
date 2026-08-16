@@ -4,12 +4,37 @@ After=kiosk.service
 # Deliberately NOT Before=/required-by kiosk.service - this runs alongside
 # the kiosk starting up, never blocking or delaying it.
 #
-# ConditionPathExists lines are OR'd by systemd: this unit (including the
-# ExecStartPre sleep below) is skipped entirely unless one of these marker
-# files is present - i.e. on every ordinary boot. Only a boot that follows
-# an auto-update attempt (see scripts/autoupdate.sh) actually runs this.
-ConditionPathExists=/etc/live-signal-kiosk/pending-update-verification
-ConditionPathExists=/etc/live-signal-kiosk/rollback-attempted
+# Bare repeated Condition*= lines are AND'd by systemd, NOT OR'd - that
+# would require BOTH marker files to exist simultaneously, which the
+# design's own state machine (scripts/healthcheck.sh) never produces (they
+# are mutually exclusive), making the unit permanently unrunnable.
+#
+# The fix is a pipe (|) placed immediately after the `=`, as part of the
+# value - "ConditionPathExists=|/path" - NOT before the directive name
+# ("|ConditionPathExists=/path"). The latter is invalid: systemd's unit
+# files are INI-style, so a leading `|` there makes the key name itself
+# "|ConditionPathExists", which is not a recognized directive - systemd
+# drops the line, silently leaving the unit with NO conditions at all,
+# which makes it run unconditionally on every boot instead of only the
+# intended ones. (An earlier revision of this file got exactly this wrong
+# before being corrected - the placement genuinely matters.)
+#
+# With the pipe correctly inside the value, each line becomes a
+# "triggering condition": per systemd.unit(5), "the unit will be started
+# if at least one of the triggering conditions of the unit applies and
+# all of the [other, non-triggering] conditions apply." There are no
+# non-triggering conditions on this unit, so that reduces to: the unit
+# (including the ExecStartPre sleep below) runs if EITHER marker file
+# exists, and is skipped entirely - not even the sleep runs - on every
+# ordinary boot where neither does.
+#
+# Verified directly against the systemd.unit(5) source text (not just a
+# paraphrase) from the Debian "testing" manpage and cross-checked against
+# the systemd source's own condition-parsing description - see
+# docs/troubleshooting.md's note on this unit for both citations. Do not
+# move the `|` back to the start of the line.
+ConditionPathExists=|/etc/live-signal-kiosk/pending-update-verification
+ConditionPathExists=|/etc/live-signal-kiosk/rollback-attempted
 
 [Service]
 Type=oneshot
